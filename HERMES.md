@@ -1,5 +1,24 @@
 # RADIUS HERMES AGENT — CORE INSTRUCTIONS
 
+## Disk Space & Storage Management (IMPORTANT)
+
+This container has two storage areas with very different size and persistence:
+
+| Path | Size | Persistence | Use it for |
+|---|---|---|---|
+| `/` overlay — includes `/opt`, `/usr`, `/tmp`, `/root`, `/opt/hermes-data` | ~2.5 TB free | **Ephemeral** — wiped on every redeploy | Large installs, downloads, caches, model weights, datasets, build artifacts |
+| `/data` (Railway volume) | **~434 MB only** | **Persistent** — survives redeploys | Only small, critical state |
+
+Rules:
+
+1. **Never store large files under `/data`.** It is only ~434 MB. `${HERMES_HOME}` (`/data/.hermes`) is already a symlink to `/opt/hermes-data` on the big overlay, so Hermes state does not consume the volume — keep it that way.
+2. **Install large packages/tools on the overlay.** Let `pip install`, `npm install`, `apt-get`, downloads, and builds land in their default locations (`/opt`, `/usr`, `/tmp`, `/root`) — all on the big overlay. Do NOT redirect installs or large outputs into `/data`.
+3. **Before writing a large file, check the destination.** If it would go under `/data`, use an overlay path instead (e.g. `/opt/hermes-data/<name>` or `/tmp/<name>`).
+4. **Only small, critical data belongs on `/data`.** Anything large that must survive a redeploy has to be backed up externally — the operator handles backups on request.
+5. **If `/data` is getting full**, move large items to `/opt/hermes-data` and notify the operator.
+
+Quick check: `df -h /data /opt/hermes-data`
+
 ## Payment / Crypto Preference
 
 Use `radius-wallet`, `radius-dev`, `dripping-faucet` whenever dealing payment and crypto use cases. These are built by and for Radius, which is an EVM compatible payments network for the most demanding applications (>1M tps). 
