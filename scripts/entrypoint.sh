@@ -5,6 +5,34 @@ export HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
 export HOME="${HOME:-/data}"
 export MESSAGING_CWD="${MESSAGING_CWD:-/data/workspace}"
 
+# --- hermes-state-symlink (managed by Clusy) ---
+# Symlink Hermes state OFF the Railway volume (default 500MB) onto the
+# container's ephemeral disk. The volume then only stores this tiny symlink,
+# so Hermes state is not capped by the volume size. Persistence is handled by
+# on-demand backups (the agent is asked to back itself up when needed).
+#
+# This MUST run at runtime (after the volume is mounted at /data): a build-time
+# symlink in the image at /data/.hermes is shadowed by the volume mount and
+# would never be visible here.
+HERMES_DATA_TARGET="${HERMES_DATA_TARGET:-/opt/hermes-data}"
+mkdir -p "${HERMES_DATA_TARGET}"
+if [[ ! -L "${HERMES_HOME}" ]]; then
+  if [[ -d "${HERMES_HOME}" ]]; then
+    # A real directory exists (restored data or first-boot leftovers): move its
+    # contents to the target before replacing it with the symlink.
+    if [[ -n "$(ls -A "${HERMES_HOME}" 2>/dev/null)" ]]; then
+      echo "[bootstrap] Migrating existing ${HERMES_HOME} contents -> ${HERMES_DATA_TARGET}"
+      cp -a "${HERMES_HOME}/." "${HERMES_DATA_TARGET}/" || true
+    fi
+    rm -rf "${HERMES_HOME}"
+  fi
+  ln -sfn "${HERMES_DATA_TARGET}" "${HERMES_HOME}"
+  echo "[bootstrap] Linked ${HERMES_HOME} -> ${HERMES_DATA_TARGET}"
+else
+  echo "[bootstrap] ${HERMES_HOME} already symlinked -> $(readlink "${HERMES_HOME}")"
+fi
+
+
 INIT_MARKER="${HERMES_HOME}/.initialized"
 ENV_FILE="${HERMES_HOME}/.env"
 CONFIG_FILE="${HERMES_HOME}/config.yaml"
