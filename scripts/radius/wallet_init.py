@@ -86,7 +86,7 @@ def _persist_address(address: str) -> None:
 
 
 def get_challenge(addr: str) -> str:
-    res = requests.get(f"{FAUCET_BASE}/challenge/{addr}", params={"token": "***"}, timeout=15)
+    res = requests.get(f"{FAUCET_BASE}/challenge/{addr}", params={"token": "SBC"}, timeout=15)
     res.raise_for_status()
     data = res.json()
     return data.get("message") or data.get("challenge", "")
@@ -104,7 +104,7 @@ def drip_with_signature(addr: str, private_key: str) -> dict:
     signature = sign_message(private_key, message)
     res = requests.post(
         f"{FAUCET_BASE}/drip",
-        json={"address": addr, "token": "***", "signature": signature},
+        json={"address": addr, "token": "SBC", "signature": signature},
         timeout=15,
     )
     data = res.json()
@@ -116,7 +116,7 @@ def drip_with_signature(addr: str, private_key: str) -> dict:
 def drip(addr: str, private_key: str):
     res = requests.post(
         f"{FAUCET_BASE}/drip",
-        json={"address": addr, "token": "***"},
+        json={"address": addr, "token": "SBC"},
         timeout=15,
     )
     data = res.json()
