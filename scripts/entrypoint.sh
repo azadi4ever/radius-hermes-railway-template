@@ -217,7 +217,6 @@ echo "[bootstrap] Writing runtime env to ${ENV_FILE}"
 {
   echo "# Managed by entrypoint.sh"
   echo "HERMES_HOME=${HERMES_HOME}"
-  echo "MESSAGING_CWD=${MESSAGING_CWD}"
 } > "$ENV_FILE"
 
 for key in \
