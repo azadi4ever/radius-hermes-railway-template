@@ -31,6 +31,10 @@ RUN pip install --no-cache-dir \
 
 FROM python:3.11-slim
 
+# >>> Custom: link Hermes state dir to /opt/hermes-data <<<
+RUN mkdir -p /opt/hermes-data /data && ln -sf /opt/hermes-data /data/.hermes
+RUN ls -la /data/.hermes  # verify
+
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
