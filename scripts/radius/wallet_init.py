@@ -123,7 +123,7 @@ def drip(addr: str, private_key: str):
     if res.ok:
         return data
 
-    err_code = data.get("error", "")
+    err_code = data.get("error") or data.get("code", "")
     if err_code == "signature_required" or res.status_code == 401:
         print("[radius] Faucet requires signed request, signing challenge...")
         return drip_with_signature(addr, private_key)
