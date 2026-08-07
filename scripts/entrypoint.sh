@@ -378,7 +378,10 @@ terminal:
   timeout: ${TERMINAL_TIMEOUT:-180}
 compression:
   enabled: true
-  threshold: 0.85
+  # Upstream default is 0.50; 0.85 let context grow to 85% of the window
+  # before compressing, which on a large-context model means far bigger (and
+  # costlier) requests before any relief.
+  threshold: ${CONTEXT_COMPRESSION_THRESHOLD:-0.50}
 EOF
 fi
 

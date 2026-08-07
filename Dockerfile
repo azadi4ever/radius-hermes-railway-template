@@ -15,7 +15,11 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip install --no-cache-dir -e "/opt/hermes-agent[messaging,cron,cli,pty]"
+# `mcp` matters: tools/mcp_tool.py guards its imports with a bare
+# `except ImportError` and sets _MCP_AVAILABLE=False, and unlike most optional
+# deps it is NOT registered for lazy install on the mcp_servers client path.
+# Without it, every mcp_servers entry in config.yaml is silently ignored.
+RUN pip install --no-cache-dir -e "/opt/hermes-agent[messaging,cron,cli,pty,mcp]"
 
 # Python dependencies for agent_server and radius scripts
 RUN pip install --no-cache-dir \
