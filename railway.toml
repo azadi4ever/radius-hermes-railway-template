@@ -4,6 +4,9 @@ builder = "dockerfile"
 [deploy]
 restartPolicyType = "on_failure"
 requiredMountPath = "/data"
+# Without a healthcheck Railway only notices a hard crash, not a hung gateway.
+healthcheckPath = "/health"
+healthcheckTimeout = 300
 
 [variables]
 HERMES_HOME = "/data/.hermes"
