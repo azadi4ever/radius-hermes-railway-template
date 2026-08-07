@@ -168,6 +168,14 @@ mkdir -p "${HOME}/.claude"
 # rules take precedence over allow rules, so even a permitted curl has nothing
 # worth stealing to point at. Keep secrets in deny; keep allow narrow and
 # anchored (no leading "*").
+#
+# The secret-name denials target the commands that PRINT a value (echo/printf,
+# plus env/printenv below), not every command that mentions it. A blanket
+# "Bash(*GITHUB_TOKEN*)" also blocks legitimate use — `git clone
+# https://$GITHUB_TOKEN@github.com/...` during a backup restore, for example —
+# and an agent that gets refused there tends to retry unauthenticated and save
+# the resulting error page as if it were real data. The Read() rules on .env and
+# the key files are what actually protect the secrets; these are a speed bump.
 cat > "${HOME}/.claude/settings.json" <<'EOF'
 {
   "permissions": {
@@ -186,12 +194,15 @@ cat > "${HOME}/.claude/settings.json" <<'EOF'
       "Bash(cat /data/.hermes/.env*)",
       "Bash(* /data/.hermes/.env*)",
       "Bash(* /proc/*/environ*)",
-      "Bash(*RADIUS_PRIVATE_KEY*)",
-      "Bash(*ANTHROPIC_API_KEY*)",
-      "Bash(*OPENROUTER_API_KEY*)",
-      "Bash(*BOT_TOKEN*)",
-      "Bash(*GITHUB_TOKEN*)",
-      "Bash(*SUDO_PASSWORD*)"
+      "Bash(echo *RADIUS_PRIVATE_KEY*)",
+      "Bash(echo *ANTHROPIC_API_KEY*)",
+      "Bash(echo *OPENROUTER_API_KEY*)",
+      "Bash(echo *BOT_TOKEN*)",
+      "Bash(echo *GITHUB_TOKEN*)",
+      "Bash(echo *SUDO_PASSWORD*)",
+      "Bash(printf *GITHUB_TOKEN*)",
+      "Bash(printf *API_KEY*)",
+      "Bash(printf *BOT_TOKEN*)"
     ],
     "allow": [
       "Bash(curl -sS http://127.0.0.1:*)",

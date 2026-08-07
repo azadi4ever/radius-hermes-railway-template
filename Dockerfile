@@ -69,16 +69,25 @@ FROM python:3.11-slim
 # linking has to happen in the entrypoint.
 RUN mkdir -p /opt/hermes-cache /data
 
+# git-lfs matters for backup/restore. Agents back their state up to a git repo,
+# and anything large there (state.db, kanban.db) is usually stored via LFS.
+# Cloning such a repo WITHOUT git-lfs succeeds silently and writes ~130-byte
+# pointer files in place of the real content, so a restore looks like it worked
+# and Hermes then fails at runtime with "file is not a database".
+# `git lfs install --system` registers the smudge/clean filters in /etc/gitconfig
+# — installing the package alone is not enough for clones to fetch LFS content.
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
+    git-lfs \
     jq \
     tini \
     nodejs \
     npm \
   && npm install -g radius-cli \
+  && git lfs install --system \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Foundry to a stable path that remains available after HOME is remapped.
