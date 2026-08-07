@@ -54,16 +54,34 @@ EXCLUDE_NAMES=(
   .env                 # regenerated from platform env vars each boot; all secrets in plaintext
   logs                 # disposable, unbounded
   well-known-skills    # derived from skills/ on every boot
+
+  # Caches. Regenerated on demand, and the media ones get large fast — they are
+  # the difference between a backup that pushes and one that does not.
+  cache
+  audio_cache
+  image_cache
+  sandboxes            # scratch space for the terminal backend
+
+  # Runtime scratch, meaningless once the process is gone.
+  gateway.pid
+  gateway-starts.log
 )
 [[ "$INCLUDE_WALLET" == "1" ]] || EXCLUDE_NAMES+=(.radius-cli)
+
+# Provider/model catalogues re-fetched on demand.
+EXCLUDE_GLOBS=('*_cache.json' '*.pid' '*.sock')
 
 # Skipped inside external-skills/: the vendored clone is re-cloned every boot.
 EXCLUDE_NESTED=(external-skills/radius-skills)
 
 is_excluded() {
-  local name="$1" e
+  local name="$1" e g
   for e in "${EXCLUDE_NAMES[@]}"; do
     [[ "$name" == "$e" ]] && return 0
+  done
+  for g in "${EXCLUDE_GLOBS[@]}"; do
+    # shellcheck disable=SC2053
+    [[ "$name" == $g ]] && return 0
   done
   return 1
 }
@@ -76,12 +94,23 @@ trap cleanup EXIT
 echo "[backup] Staging state from ${HERMES_HOME}"
 
 # --- databases: snapshot through sqlite3, never a raw copy -------------------
+# VACUUM INTO is preferred over .backup: both give a consistent snapshot, but
+# VACUUM also rebuilds the file without free pages. A long-running agent's
+# state.db carries a lot of those — and shrinking it here is what keeps the
+# backup under GitHub's limits and off the volume's ceiling on restore.
 shopt -s nullglob
 for db in "${HERMES_HOME}"/*.db; do
   name="$(basename "$db")"
+  before="$(stat -c%s "$db" 2>/dev/null || echo 0)"
+
   if command -v sqlite3 >/dev/null 2>&1; then
+    if sqlite3 "$db" "VACUUM INTO '${STAGING}/${name}'" 2>/dev/null; then
+      after="$(stat -c%s "${STAGING}/${name}" 2>/dev/null || echo 0)"
+      echo "[backup]   ${name} (vacuumed snapshot: $((before/1024/1024))MB -> $((after/1024/1024))MB)"
+      continue
+    fi
     if sqlite3 "$db" ".backup '${STAGING}/${name}'" 2>/dev/null; then
-      echo "[backup]   ${name} (sqlite3 snapshot)"
+      echo "[backup]   ${name} (sqlite3 snapshot, $((before/1024/1024))MB)"
       continue
     fi
     echo "[backup]   WARNING: sqlite3 snapshot failed for ${name}; falling back to copy." >&2
@@ -118,7 +147,7 @@ for src in "${HERMES_HOME}"/*; do
     cp -a "${src}/." "${STAGING}/${item}/"
     # Drop nested paths that are regenerable even though their parent is kept.
     for nested in "${EXCLUDE_NESTED[@]}"; do
-      [[ "$nested" == "${item}/"* ]] && rm -rf "${STAGING}/${nested}"
+      [[ "$nested" == "${item}/"* ]] && rm -rf "${STAGING:?}/${nested:?}"
     done
   else
     cp -a "$src" "${STAGING}/${item}"
@@ -148,15 +177,32 @@ fi
 git -C "$CLONE" config user.email "hermes@localhost"
 git -C "$CLONE" config user.name "Hermes Agent"
 
-# Binary databases must never go through git's EOL normalisation. Without this,
-# a repo carrying `* text=auto` silently corrupts them.
-cat > "${CLONE}/.gitattributes" <<'ATTR'
+# Databases go through Git LFS, not plain git objects.
+#
+# GitHub hard-rejects any single file over 100MB pushed as a normal blob, and a
+# long-running agent's state.db passes that easily — 148MB in the case that
+# prompted this. The push fails outright; there is no partial success to notice
+# later. LFS also keeps the repository from carrying a full copy of a large
+# binary in history on every backup.
+#
+# The filter attributes double as the EOL protection these files need: without
+# `-text`, a repo carrying `* text=auto` corrupts a database in transit.
+if command -v git-lfs >/dev/null 2>&1 || git lfs version >/dev/null 2>&1; then
+  git -C "$CLONE" lfs install --local >/dev/null 2>&1 || true
+  cat > "${CLONE}/.gitattributes" <<'ATTR'
+*.db filter=lfs diff=lfs merge=lfs -text
+*.sqlite filter=lfs diff=lfs merge=lfs -text
+*.sqlite3 filter=lfs diff=lfs merge=lfs -text
+ATTR
+  echo "[backup] Databases will be stored via Git LFS."
+else
+  cat > "${CLONE}/.gitattributes" <<'ATTR'
 *.db binary
-*.db-wal binary
-*.db-shm binary
 *.sqlite binary
 *.sqlite3 binary
 ATTR
+  echo "[backup] WARNING: git-lfs is not installed. Files over 100MB will be rejected by GitHub." >&2
+fi
 
 # Replace the tracked payload wholesale so deletions propagate.
 find "$CLONE" -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.gitattributes' -exec rm -rf {} +
@@ -173,6 +219,23 @@ Excluded by design: .env (regenerated on boot, holds all secrets),
 logs/, well-known-skills/, external-skills/radius-skills/ (all rebuilt on boot).
 INFO
 
+total_mb="$(du -sm "$STAGING" 2>/dev/null | cut -f1 || echo '?')"
+echo "[backup] Payload: ${total_mb}MB"
+
+# Flag anything that will be rejected before spending time on the push.
+# Collected into a variable and read via here-string: process substitution needs
+# /dev/fd, which is not available in every container runtime.
+big_files="$(find "$STAGING" -type f -size +100M 2>/dev/null || true)"
+if [[ -n "$big_files" ]]; then
+  while IFS= read -r big; do
+    [[ -n "$big" ]] || continue
+    rel="${big#"$STAGING"/}"
+    if ! grep -q "filter=lfs" "${CLONE}/.gitattributes" 2>/dev/null; then
+      echo "[backup] WARNING: ${rel} is over 100MB and is not LFS-tracked; GitHub will reject it." >&2
+    fi
+  done <<< "$big_files"
+fi
+
 git -C "$CLONE" add -A
 if git -C "$CLONE" diff --cached --quiet; then
   echo "[backup] No changes since the last backup."
@@ -181,10 +244,26 @@ fi
 
 git -C "$CLONE" commit --quiet -m "Hermes state backup $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-if git -C "$CLONE" push --quiet origin HEAD:main 2>/dev/null; then
+# Capture the real git output. Swallowing it turned a "file too large" rejection
+# into a misleading "check your token" message and cost an hour of guessing.
+# Scrub the token before anything is printed.
+echo "[backup] Pushing (${total_mb}MB — this can take a while)"
+push_log="$(git -C "$CLONE" push origin HEAD:main 2>&1)" && push_rc=0 || push_rc=$?
+push_log="${push_log//${TOKEN}/<token>}"
+
+if [[ "$push_rc" -eq 0 ]]; then
   echo "[backup] Pushed to main."
 else
-  echo "[backup] ERROR: push failed. Check that the token has write access to the repo." >&2
+  echo "[backup] ERROR: push failed. Git said:" >&2
+  printf '%s\n' "$push_log" | sed 's/^/[backup]   /' >&2
+  case "$push_log" in
+    *"exceeds"*|*"too large"*|*"GH001"*)
+      echo "[backup] HINT: a file exceeds GitHub's 100MB limit. Ensure git-lfs is installed so databases are LFS-tracked." >&2 ;;
+    *403*|*"Permission"*|*"denied"*|*"Authentication"*)
+      echo "[backup] HINT: the token cannot write to this repo. It needs 'Contents: read and write' on it." >&2 ;;
+    *"quota"*|*"bandwidth"*)
+      echo "[backup] HINT: the LFS quota is exhausted (1GB storage/bandwidth on free GitHub accounts)." >&2 ;;
+  esac
   exit 1
 fi
 

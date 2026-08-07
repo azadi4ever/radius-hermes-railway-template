@@ -70,8 +70,14 @@ fi
 if [[ -f "${CLONE}/.gitattributes" ]] && grep -q 'filter=lfs' "${CLONE}/.gitattributes" 2>/dev/null; then
   if command -v git-lfs >/dev/null 2>&1 || git lfs version >/dev/null 2>&1; then
     echo "[restore] Repository uses Git LFS — fetching content"
-    git -C "$CLONE" lfs pull 2>/dev/null || {
+    # Register the filters for THIS clone before pulling. Having the binary on
+    # PATH is not enough: without the hooks, `lfs pull` declines to run and the
+    # pointer stubs stay in place — the same silent failure this whole check
+    # exists to catch.
+    git -C "$CLONE" lfs install --local >/dev/null 2>&1 || true
+    lfs_log="$(git -C "$CLONE" lfs pull 2>&1)" || {
       echo "[restore] ERROR: 'git lfs pull' failed. Aborting rather than restoring pointer stubs." >&2
+      printf '%s\n' "${lfs_log//${TOKEN}/<token>}" | sed 's/^/[restore]   /' >&2
       exit 1
     }
   else
