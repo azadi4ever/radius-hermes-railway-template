@@ -103,20 +103,34 @@ for db in "${HERMES_HOME}"/*.db; do
   name="$(basename "$db")"
   before="$(stat -c%s "$db" 2>/dev/null || echo 0)"
 
+  snapshotted=0
   if command -v sqlite3 >/dev/null 2>&1; then
     if sqlite3 "$db" "VACUUM INTO '${STAGING}/${name}'" 2>/dev/null; then
-      after="$(stat -c%s "${STAGING}/${name}" 2>/dev/null || echo 0)"
-      echo "[backup]   ${name} (vacuumed snapshot: $((before/1024/1024))MB -> $((after/1024/1024))MB)"
-      continue
+      snapshotted=1
+    elif sqlite3 "$db" ".backup '${STAGING}/${name}'" 2>/dev/null; then
+      snapshotted=1
+    else
+      echo "[backup]   WARNING: sqlite3 snapshot failed for ${name}; falling back to copy." >&2
     fi
-    if sqlite3 "$db" ".backup '${STAGING}/${name}'" 2>/dev/null; then
-      echo "[backup]   ${name} (sqlite3 snapshot, $((before/1024/1024))MB)"
-      continue
-    fi
-    echo "[backup]   WARNING: sqlite3 snapshot failed for ${name}; falling back to copy." >&2
   fi
-  cp -a "$db" "${STAGING}/${name}"
-  echo "[backup]   ${name} (raw copy — may be inconsistent if written during copy)"
+  if [[ "$snapshotted" != "1" ]]; then
+    cp -a "$db" "${STAGING}/${name}"
+    echo "[backup]   ${name} (raw copy — may be inconsistent if written during copy)"
+  fi
+
+  # Compress. A SQLite file is mostly repetitive structure and text, so gzip
+  # takes a vacuumed 102MB database to roughly a quarter of that. Crossing back
+  # under GitHub's 100MB blob limit is the point: it takes Git LFS out of the
+  # picture entirely, and with it the 1GB free-tier storage and bandwidth quota
+  # that nightly backups of a 100MB file would exhaust within a week.
+  if command -v gzip >/dev/null 2>&1 && [[ -f "${STAGING}/${name}" ]]; then
+    gzip -6 -f "${STAGING}/${name}"
+    final="$(stat -c%s "${STAGING}/${name}.gz" 2>/dev/null || echo 0)"
+    echo "[backup]   ${name}.gz ($((before/1024/1024))MB -> $((final/1024/1024))MB after vacuum+gzip)"
+  else
+    after="$(stat -c%s "${STAGING}/${name}" 2>/dev/null || echo 0)"
+    echo "[backup]   ${name} ($((before/1024/1024))MB -> $((after/1024/1024))MB)"
+  fi
 done
 shopt -u nullglob
 
@@ -177,31 +191,38 @@ fi
 git -C "$CLONE" config user.email "hermes@localhost"
 git -C "$CLONE" config user.name "Hermes Agent"
 
-# Databases go through Git LFS, not plain git objects.
+# Plain git objects by default; LFS only for what genuinely needs it.
 #
-# GitHub hard-rejects any single file over 100MB pushed as a normal blob, and a
-# long-running agent's state.db passes that easily — 148MB in the case that
-# prompted this. The push fails outright; there is no partial success to notice
-# later. LFS also keeps the repository from carrying a full copy of a large
-# binary in history on every backup.
+# GitHub hard-rejects any single blob over 100MB, and an un-gzipped state.db
+# clears that easily. LFS solves the limit but introduces a worse one: the free
+# tier gives 1GB of LFS storage and 1GB of monthly bandwidth, so nightly backups
+# of a 100MB object exhaust it inside a week. Compressing the databases (above)
+# brings them under the blob limit instead, which sidesteps the quota entirely.
 #
-# The filter attributes double as the EOL protection these files need: without
-# `-text`, a repo carrying `* text=auto` corrupts a database in transit.
-if command -v git-lfs >/dev/null 2>&1 || git lfs version >/dev/null 2>&1; then
-  git -C "$CLONE" lfs install --local >/dev/null 2>&1 || true
-  cat > "${CLONE}/.gitattributes" <<'ATTR'
-*.db filter=lfs diff=lfs merge=lfs -text
-*.sqlite filter=lfs diff=lfs merge=lfs -text
-*.sqlite3 filter=lfs diff=lfs merge=lfs -text
-ATTR
-  echo "[backup] Databases will be stored via Git LFS."
-else
-  cat > "${CLONE}/.gitattributes" <<'ATTR'
+# `binary` is not optional even for the .gz: a repo carrying `* text=auto` would
+# otherwise apply EOL normalisation and corrupt them.
+cat > "${CLONE}/.gitattributes" <<'ATTR'
+*.gz binary
 *.db binary
 *.sqlite binary
 *.sqlite3 binary
 ATTR
-  echo "[backup] WARNING: git-lfs is not installed. Files over 100MB will be rejected by GitHub." >&2
+
+# Anything still over the limit after compression has to go through LFS.
+oversized="$(find "$STAGING" -type f -size +95M 2>/dev/null || true)"
+if [[ -n "$oversized" ]]; then
+  if command -v git-lfs >/dev/null 2>&1 || git lfs version >/dev/null 2>&1; then
+    git -C "$CLONE" lfs install --local >/dev/null 2>&1 || true
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      rel="${f#"$STAGING"/}"
+      printf '%s filter=lfs diff=lfs merge=lfs -text\n' "$rel" >> "${CLONE}/.gitattributes"
+      echo "[backup] ${rel} is over 95MB — tracking it with Git LFS."
+    done <<< "$oversized"
+    echo "[backup] NOTE: LFS is in use. The free tier allows 1GB storage and 1GB/month bandwidth." >&2
+  else
+    echo "[backup] WARNING: a file exceeds 95MB and git-lfs is unavailable; GitHub will reject the push." >&2
+  fi
 fi
 
 # Replace the tracked payload wholesale so deletions propagate.

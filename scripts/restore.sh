@@ -102,6 +102,20 @@ if [[ -n "$lfs_hits" ]]; then
 fi
 
 shopt -s nullglob
+
+# Decompress before verifying. backup.sh gzips the databases so they stay under
+# GitHub's 100MB blob limit and out of Git LFS; the checks below all expect the
+# raw SQLite file, and so does the copy step afterwards.
+for gz in "$CLONE"/*.db.gz; do
+  name="$(basename "$gz" .gz)"
+  if ! gunzip -f "$gz" 2>/dev/null; then
+    echo "[restore]   BROKEN: ${name}.gz failed to decompress." >&2
+    problems=$((problems+1))
+    continue
+  fi
+  echo "[restore]   decompressed ${name}"
+done
+
 for db in "$CLONE"/*.db; do
   name="$(basename "$db")"
   if [[ "$(head -c 15 "$db" 2>/dev/null)" != "SQLite format 3" ]]; then
