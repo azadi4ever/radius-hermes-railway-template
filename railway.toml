@@ -8,4 +8,3 @@ requiredMountPath = "/data"
 [variables]
 HERMES_HOME = "/data/.hermes"
 HOME = "/data"
-MESSAGING_CWD = "/data/workspace"

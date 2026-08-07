@@ -3,7 +3,14 @@ set -euo pipefail
 
 export HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
 export HOME="${HOME:-/data}"
-export MESSAGING_CWD="${MESSAGING_CWD:-/data/workspace}"
+# MESSAGING_CWD is deprecated: hermes warns when it is present in the process
+# environment (hermes_cli/config.py:warn_deprecated_cwd_env_vars — the warning
+# text says ".env" but the check reads os.environ). Keep a shell-local copy for
+# the mkdir/link steps below, then drop it from the environment so child
+# processes (gateway, agent server) never inherit it. The canonical setting is
+# terminal.cwd in config.yaml (written above).
+MESSAGING_CWD_DIR="${MESSAGING_CWD:-/data/workspace}"
+unset MESSAGING_CWD
 
 # --- hermes-state-symlink (managed by Clusy) ---
 # Symlink Hermes state OFF the Railway volume (default 500MB) onto the
@@ -37,7 +44,7 @@ INIT_MARKER="${HERMES_HOME}/.initialized"
 ENV_FILE="${HERMES_HOME}/.env"
 CONFIG_FILE="${HERMES_HOME}/config.yaml"
 
-mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/logs" "${HERMES_HOME}/sessions" "${HERMES_HOME}/cron" "${HERMES_HOME}/pairing" "${MESSAGING_CWD}"
+mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/logs" "${HERMES_HOME}/sessions" "${HERMES_HOME}/cron" "${HERMES_HOME}/pairing" "${MESSAGING_CWD_DIR}"
 mkdir -p "${HOME}/.claude"
 
 # Write Claude Code settings — always overwrite to keep permissions fresh
@@ -821,7 +828,7 @@ else:
 PYEOF
 
 # Seed the messaging workspace so gateway sessions discover bundled project context
-# from MESSAGING_CWD immediately.
+# from the messaging workspace immediately.
 link_into_workspace() {
   local src="$1"
   local dest="$2"
@@ -842,13 +849,13 @@ link_into_workspace() {
   fi
 }
 
-link_into_workspace /app/HERMES.md "${MESSAGING_CWD}/HERMES.md" true
-link_into_workspace /app/HERMES.md "${MESSAGING_CWD}/.hermes.md" true
-link_into_workspace /app/AGENTS.md "${MESSAGING_CWD}/AGENTS.md" true
-link_into_workspace /app/README.md "${MESSAGING_CWD}/README.md"
-link_into_workspace "$SKILLS_DIR" "${MESSAGING_CWD}/skills"
-link_into_workspace "$PLUGINS_DIR" "${MESSAGING_CWD}/plugins"
-link_into_workspace /app/scripts "${MESSAGING_CWD}/scripts"
+link_into_workspace /app/HERMES.md "${MESSAGING_CWD_DIR}/HERMES.md" true
+link_into_workspace /app/HERMES.md "${MESSAGING_CWD_DIR}/.hermes.md" true
+link_into_workspace /app/AGENTS.md "${MESSAGING_CWD_DIR}/AGENTS.md" true
+link_into_workspace /app/README.md "${MESSAGING_CWD_DIR}/README.md"
+link_into_workspace "$SKILLS_DIR" "${MESSAGING_CWD_DIR}/skills"
+link_into_workspace "$PLUGINS_DIR" "${MESSAGING_CWD_DIR}/plugins"
+link_into_workspace /app/scripts "${MESSAGING_CWD_DIR}/scripts"
 
 # Populate .well-known skills directory — only skills with `published: true` in frontmatter
 # Sources: bundled flat skills and vendored external skill directories
