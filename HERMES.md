@@ -41,20 +41,48 @@ Quick check: `df -h /data /opt/hermes-cache`
 
 ## Backup & Restore
 
-**Use the scripts. Do not improvise this.**
+**Use the scripts. Do not improvise this.** No splitting, no Git LFS, no
+hand-rolled `cp`-and-push. Everything below is already handled inside them.
+
+When `BACKUP_REPO` and `GITHUB_TOKEN` are set — the normal deployment — both
+commands take no arguments at all:
+
+```bash
+/app/scripts/backup.sh
+/app/scripts/restore.sh
+```
+
+Otherwise pass the repository explicitly:
 
 ```bash
 /app/scripts/backup.sh  https://github.com/<owner>/<repo>.git
 /app/scripts/restore.sh https://github.com/<owner>/<repo>.git
 ```
 
-Both read the token from `BACKUP_GITHUB_TOKEN` or `GITHUB_TOKEN`. If the
-operator hands you a token in chat, export it for the command rather than
-writing it to a file:
+The token is read from `BACKUP_GITHUB_TOKEN` or `GITHUB_TOKEN`. If the operator
+hands you one in chat, pass it for that single command rather than writing it to
+a file:
 
 ```bash
-BACKUP_GITHUB_TOKEN=<token> /app/scripts/backup.sh https://github.com/you/hermes-backup.git
+BACKUP_GITHUB_TOKEN=<token> /app/scripts/backup.sh
 ```
+
+### Sizes: do not re-derive this
+
+`state.db` is large — 100MB+ is normal. That is NOT a problem and needs no
+workaround:
+
+- `backup.sh` runs `VACUUM INTO` and then gzips, which takes a 148MB database to
+  roughly 29MB. It never touches the live file.
+- 29MB is comfortably under GitHub's 100MB blob limit, so **Git LFS is not
+  needed and must not be reintroduced.** LFS trades the blob limit for a 1GB
+  storage/bandwidth quota that nightly backups exhaust within a week.
+- Splitting the database into parts is wrong twice over: it writes another full
+  copy onto the volume, and the parts are not in the exclude list so they end up
+  inside the next backup.
+
+If a size looks alarming, check what the script actually uploads before
+proposing anything.
 
 After a restore, the service MUST be restarted — Hermes holds the old databases
 open until it is.
