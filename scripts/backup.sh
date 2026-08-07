@@ -23,15 +23,39 @@
 set -euo pipefail
 
 HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
-REPO_URL="${1:-${BACKUP_REPO:-}}"
 INCLUDE_WALLET=1
 
 for arg in "$@"; do
   [[ "$arg" == "--no-wallet" ]] && INCLUDE_WALLET=0
 done
 
+# from_hermes_env <KEY>
+# Read a value out of ${HERMES_HOME}/.env.
+#
+# The platform's variables are not always visible to whatever process ends up
+# invoking this. An agent's terminal tool may run with a scrubbed environment —
+# sensible on its part, since it is exactly how a prompt-injected command would
+# read a secret — and the script then fails with "token not set" on a deployment
+# where the variable is plainly configured.
+#
+# The entrypoint writes the same values to ${HERMES_HOME}/.env (mode 0600) for
+# Hermes itself, so that file is the authoritative fallback.
+from_hermes_env() {
+  local key="$1" file="${HERMES_HOME}/.env" val
+  [[ -r "$file" ]] || return 0
+  val="$(sed -n "s/^${key}=//p" "$file" | head -n1)"
+  # Tolerate values written with surrounding quotes.
+  val="${val%\"}"; val="${val#\"}"
+  val="${val%\'}"; val="${val#\'}"
+  printf '%s' "$val"
+}
+
+REPO_URL="${1:-${BACKUP_REPO:-}}"
+[[ "$REPO_URL" == --* ]] && REPO_URL=""
+[[ -z "$REPO_URL" ]] && REPO_URL="$(from_hermes_env BACKUP_REPO)"
+
 if [[ -z "$REPO_URL" ]]; then
-  echo "usage: $0 <repo-url> [--no-wallet]" >&2
+  echo "[backup] ERROR: no repository. Pass one, or set BACKUP_REPO." >&2
   echo "  e.g. $0 https://github.com/you/hermes-backup.git" >&2
   exit 2
 fi
@@ -42,7 +66,13 @@ KEEP="${BACKUP_KEEP:-2}"
 
 TOKEN="${BACKUP_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 if [[ -z "$TOKEN" ]]; then
-  echo "[backup] ERROR: set BACKUP_GITHUB_TOKEN or GITHUB_TOKEN first." >&2
+  TOKEN="$(from_hermes_env BACKUP_GITHUB_TOKEN)"
+  [[ -z "$TOKEN" ]] && TOKEN="$(from_hermes_env GITHUB_TOKEN)"
+  [[ -n "$TOKEN" ]] && echo "[backup] Token read from ${HERMES_HOME}/.env"
+fi
+if [[ -z "$TOKEN" ]]; then
+  echo "[backup] ERROR: no token. Set BACKUP_GITHUB_TOKEN or GITHUB_TOKEN in the" >&2
+  echo "  platform's variables, or pass it for this command only." >&2
   exit 1
 fi
 
