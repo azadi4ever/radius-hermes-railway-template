@@ -59,9 +59,24 @@ Otherwise pass the repository explicitly:
 /app/scripts/restore.sh https://github.com/<owner>/<repo>.git
 ```
 
-The token is read from `BACKUP_GITHUB_TOKEN` or `GITHUB_TOKEN`. If the operator
-hands you one in chat, pass it for that single command rather than writing it to
-a file:
+**Run the script. Do not check for credentials first.** Your tool environment is
+not the container's environment — the platform's variables are frequently
+invisible to you even when they are correctly set, so `echo $GITHUB_TOKEN`
+coming back empty proves nothing. The scripts resolve the token and repository
+themselves, in this order:
+
+1. the command-line argument
+2. `BACKUP_GITHUB_TOKEN` / `GITHUB_TOKEN` / `BACKUP_REPO` in the environment
+3. `${HERMES_HOME}/.env`, which the entrypoint writes at boot
+
+Step 3 is why a pre-flight check is worse than useless: it reports a failure the
+script would not have had. Run the command, read its output, and report what it
+actually said. `[backup] Token read from .../.env` means the fallback worked.
+
+Never ask the operator to paste a token into chat. Chat lands in `sessions/`,
+`sessions/` is backed up, and the token would end up inside the backup
+repository. If one is handed to you anyway, pass it for that single command
+rather than writing it anywhere:
 
 ```bash
 BACKUP_GITHUB_TOKEN=<token> /app/scripts/backup.sh
