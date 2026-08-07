@@ -144,6 +144,47 @@ report_disk_usage() {
 }
 report_disk_usage
 
+# Catch a broken restore at boot instead of letting it surface later as a bare
+# "file is not a database" from deep inside Hermes.
+#
+# Two failure modes, both silent at restore time:
+#   - Git LFS pointers. Backup repos keep the databases in LFS; a clone without
+#     git-lfs still succeeds and writes ~130-byte text stubs in their place.
+#   - Truncated or mangled databases, e.g. a .db normalised as text by
+#     `* text=auto` in .gitattributes, or an error page saved as if it were data.
+# Warn only — a damaged database is not a reason to refuse to boot, and Hermes
+# degrades to JSONL sessions on its own.
+verify_state_integrity() {
+  local problems=0 f db lfs_hits
+
+  # Collect first, then iterate over a here-string: process substitution needs
+  # /dev/fd, which is not guaranteed in every container runtime, and a failure
+  # there would silently skip the check.
+  lfs_hits="$(find "${HERMES_HOME}" -maxdepth 2 -type f -size -200c \
+                -exec sh -c 'head -c 40 "$1" 2>/dev/null | grep -q "git-lfs" && echo "$1"' _ {} \; 2>/dev/null || true)"
+
+  if [[ -n "${lfs_hits}" ]]; then
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      echo "[bootstrap] WARNING: ${f} is a Git LFS pointer, not real content." >&2
+      problems=$((problems + 1))
+    done <<< "${lfs_hits}"
+  fi
+
+  for db in "${HERMES_HOME}"/*.db; do
+    [[ -f "$db" && -s "$db" ]] || continue
+    if [[ "$(head -c 15 "$db" 2>/dev/null)" != "SQLite format 3" ]]; then
+      echo "[bootstrap] WARNING: ${db} is not a valid SQLite database ($(stat -c%s "$db" 2>/dev/null) bytes)." >&2
+      problems=$((problems + 1))
+    fi
+  done
+
+  if (( problems > 0 )); then
+    echo "[bootstrap] ${problems} state file(s) are damaged. If you just restored a backup, redo it with git-lfs present (git lfs pull) and re-check before restarting." >&2
+  fi
+}
+verify_state_integrity
+
 
 INIT_MARKER="${HERMES_HOME}/.initialized"
 ENV_FILE="${HERMES_HOME}/.env"

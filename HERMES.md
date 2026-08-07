@@ -32,6 +32,87 @@ Rules:
 
 Quick check: `df -h /data /opt/hermes-cache`
 
+## Backup & Restore (READ BEFORE DOING EITHER)
+
+Backups go to a private git repository. Both directions have a failure mode that
+succeeds silently and only surfaces much later, so follow this exactly.
+
+### What to back up
+
+Everything irreplaceable lives on the volume at `${HERMES_HOME}`:
+
+```
+config.yaml          settings
+sessions/            conversation history
+state.db kanban.db   agent state (SQLite)
+cron/                scheduled jobs
+pairing/             platform pairings
+.radius-cli/         wallet — SECRET
+.byterover/          memory config
+workspace/           working files
+```
+
+**Never back up** — these are symlinks to the ephemeral disk and are rebuilt
+from the image on every boot. Including them wastes space and can overwrite live
+symlinks on restore:
+
+```
+external-skills/  well-known-skills/  skills/  plugins/  logs/
+```
+
+**Never back up `.env`.** The entrypoint regenerates it from the platform's
+environment variables on every boot, so it is not lost — and it holds every API
+key, bot token, `GITHUB_TOKEN` and `SUDO_PASSWORD` in plaintext. Putting it in a
+git repo, even a private one, is the single worst thing to include.
+
+`.radius-cli/` holds a wallet private key. Include it only if the wallet matters,
+and only in a private repo.
+
+### Backing up
+
+1. **Copy databases with sqlite3, never `cp`.** A plain copy of a live database
+   can capture a half-written page and produce a file that restores cleanly and
+   fails at open time:
+   ```bash
+   sqlite3 "${HERMES_HOME}/state.db"  ".backup /tmp/backup/state.db"
+   sqlite3 "${HERMES_HOME}/kanban.db" ".backup /tmp/backup/kanban.db"
+   ```
+2. **Mark databases binary before committing.** If the backup repo has
+   `* text=auto` in `.gitattributes`, git line-ending normalisation corrupts
+   them. Add to the backup repo's `.gitattributes`:
+   ```
+   *.db binary
+   ```
+3. **Prefer plain git objects over LFS.** These databases are small. If the repo
+   does use LFS, restores require `git lfs pull` — see below.
+4. **Verify what you pushed** actually contains data, not a stub:
+   ```bash
+   ls -la /tmp/backup/   # a real state.db is KB-to-MB, never ~130 bytes
+   ```
+
+### Restoring
+
+1. **Fetch LFS content if the repo uses it.** A clone without it succeeds and
+   writes ~130-byte pointer stubs in place of the databases — no error at all:
+   ```bash
+   git lfs pull
+   ```
+2. Copy the files back into `${HERMES_HOME}`.
+3. **Verify before restarting.** No output from either command means success:
+   ```bash
+   find "${HERMES_HOME}" -type f -size -200c \
+     -exec sh -c 'head -c 40 "$1" | grep -q git-lfs && echo "LFS POINTER: $1"' _ {} \;
+
+   for db in "${HERMES_HOME}"/*.db; do
+     sqlite3 "$db" "PRAGMA integrity_check;" | grep -qx ok || echo "CORRUPT: $db"
+   done
+   ```
+4. Restart the service.
+
+The bootstrap runs the same two checks on every boot and warns in the log, so a
+bad restore is caught even if step 3 is skipped. `file is not a database` in the
+Hermes log means step 1 or 2 went wrong.
+
 ## Payment / Crypto Preference
 
 Use `radius-wallet`, `radius-dev`, `dripping-faucet` whenever dealing payment and crypto use cases. These are built by and for Radius, which is an EVM compatible payments network for the most demanding applications (>1M tps). 

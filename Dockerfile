@@ -76,6 +76,11 @@ RUN mkdir -p /opt/hermes-cache /data
 # and Hermes then fails at runtime with "file is not a database".
 # `git lfs install --system` registers the smudge/clean filters in /etc/gitconfig
 # — installing the package alone is not enough for clones to fetch LFS content.
+#
+# sqlite3 is here for the other half of the same job: copying a live database
+# file can capture a torn write, so backups should go through
+# `sqlite3 state.db ".backup out.db"`. It also makes `PRAGMA integrity_check`
+# available for verifying a restore before trusting it.
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -83,6 +88,7 @@ RUN apt-get update \
     git \
     git-lfs \
     jq \
+    sqlite3 \
     tini \
     nodejs \
     npm \
