@@ -6,18 +6,31 @@ This container has two storage areas with very different size and persistence:
 
 | Path | Size | Persistence | Use it for |
 |---|---|---|---|
-| `/` overlay — includes `/opt`, `/usr`, `/tmp`, `/root`, `/opt/hermes-data` | ~2.5 TB free | **Ephemeral** — wiped on every redeploy | Large installs, downloads, caches, model weights, datasets, build artifacts |
+| `/` overlay — includes `/opt`, `/opt/hermes-cache`, `/usr`, `/tmp` | large, but **wiped on every redeploy** | **Ephemeral** | Large installs, downloads, caches, datasets, build artifacts |
 | `/data` (Railway volume) | **~434 MB only** | **Persistent** — survives redeploys | Only small, critical state |
+
+`${HERMES_HOME}` (`/data/.hermes`) is a **real directory on the volume**, so your
+config, sessions, cron jobs and pairings survive a redeploy. Only these
+subpaths are symlinked onto the ephemeral overlay, because they are rebuilt from
+the image or re-cloned on every boot: `external-skills/`, `well-known-skills/`,
+`skills/`, `plugins/`, `logs/`, plus `~/.npm` and `~/.cache`.
 
 Rules:
 
-1. **Never store large files under `/data`.** It is only ~434 MB. `${HERMES_HOME}` (`/data/.hermes`) is already a symlink to `/opt/hermes-data` on the big overlay, so Hermes state does not consume the volume — keep it that way.
-2. **Install large packages/tools on the overlay.** Let `pip install`, `npm install`, `apt-get`, downloads, and builds land in their default locations (`/opt`, `/usr`, `/tmp`, `/root`) — all on the big overlay. Do NOT redirect installs or large outputs into `/data`.
-3. **Before writing a large file, check the destination.** If it would go under `/data`, use an overlay path instead (e.g. `/opt/hermes-data/<name>` or `/tmp/<name>`).
-4. **Only small, critical data belongs on `/data`.** Anything large that must survive a redeploy has to be backed up externally — the operator handles backups on request.
-5. **If `/data` is getting full**, move large items to `/opt/hermes-data` and notify the operator.
+1. **Never store large files under `/data`.** The volume is only ~434 MB, and it
+   is the one thing that survives a redeploy — keep it for state, not bulk.
+2. **Install large packages/tools on the overlay.** Let `pip install`,
+   `npm install`, `apt-get`, downloads and builds land in their default
+   locations (`/opt`, `/usr`, `/tmp`). Do NOT redirect them into `/data`.
+3. **Before writing a large file, check the destination.** If it would land
+   under `/data`, use `/opt/hermes-cache/<name>` or `/tmp/<name>` instead.
+4. **Anything you put on the overlay is gone after the next redeploy.** If a
+   large artifact must survive, it has to be backed up externally — ask the
+   operator.
+5. **If `/data` is getting full**, prune old sessions/logs and notify the
+   operator. The bootstrap log prints volume usage on every boot.
 
-Quick check: `df -h /data /opt/hermes-data`
+Quick check: `df -h /data /opt/hermes-cache`
 
 ## Payment / Crypto Preference
 

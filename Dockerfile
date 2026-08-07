@@ -31,9 +31,14 @@ RUN pip install --no-cache-dir \
 
 FROM python:3.11-slim
 
-# >>> Custom: link Hermes state dir to /opt/hermes-data <<<
-RUN mkdir -p /opt/hermes-data /data && ln -sf /opt/hermes-data /data/.hermes
-RUN ls -la /data/.hermes  # verify
+# Ephemeral cache root for the large, regenerable paths that entrypoint.sh
+# symlinks off the Railway volume (see "hermes-state-persistence" there).
+#
+# NOTE: do NOT create the /data/.hermes symlink here. Railway mounts the volume
+# at /data at RUNTIME, which shadows whatever the image has at that path, so a
+# build-time link there is invisible to the running container. All of the
+# linking has to happen in the entrypoint.
+RUN mkdir -p /opt/hermes-cache /data
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
