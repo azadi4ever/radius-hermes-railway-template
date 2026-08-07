@@ -32,99 +32,87 @@ Rules:
 
 Quick check: `df -h /data /opt/hermes-cache`
 
-## Backup & Restore (READ BEFORE DOING EITHER)
+## Backup & Restore
 
-Backups go to a private git repository. Both directions have a failure mode that
-succeeds silently and only surfaces much later, so follow this exactly.
+**Use the scripts. Do not improvise this.**
 
-### What to back up
-
-Everything irreplaceable lives on the volume at `${HERMES_HOME}`:
-
-```
-config.yaml          settings
-sessions/            conversation history
-state.db kanban.db   agent state (SQLite)
-cron/                scheduled jobs
-pairing/             platform pairings
-skills/              INCLUDING any skill you authored at runtime
-plugins/             INCLUDING any plugin you authored at runtime
-.radius-cli/         wallet — SECRET
-.byterover/          memory config
-workspace/           working files
+```bash
+/app/scripts/backup.sh  https://github.com/<owner>/<repo>.git
+/app/scripts/restore.sh https://github.com/<owner>/<repo>.git
 ```
 
-`skills/` and `plugins/` are real directories on the volume, and only the
-entries bundled in the image are overwritten by name on each boot. Anything you
-create there persists — so it must be backed up, or a lost volume loses your
-work permanently.
+Both read the token from `BACKUP_GITHUB_TOKEN` or `GITHUB_TOKEN`. If the
+operator hands you a token in chat, export it for the command rather than
+writing it to a file:
 
-**Do not back up** — these are symlinks onto the ephemeral disk, rebuilt or
-re-cloned on every boot. Including them wastes space and can write through the
-live symlinks on restore:
-
-```
-external-skills/radius-skills/   vendored clone, re-cloned each boot
-well-known-skills/               derived from skills/ each boot
-logs/                            disposable
+```bash
+BACKUP_GITHUB_TOKEN=<token> /app/scripts/backup.sh https://github.com/you/hermes-backup.git
 ```
 
-Note it is `external-skills/radius-skills` specifically, not the whole
-`external-skills/` parent — anything you add alongside the vendored clone lives
-on the volume and DOES need backing up.
+After a restore, the service MUST be restarted — Hermes holds the old databases
+open until it is.
 
-**Never back up `.env`.** The entrypoint regenerates it from the platform's
-environment variables on every boot, so it is not lost — and it holds every API
-key, bot token, `GITHUB_TOKEN` and `SUDO_PASSWORD` in plaintext. Putting it in a
-git repo, even a private one, is the single worst thing to include.
+### Why a script and not a checklist
 
-`.radius-cli/` holds a wallet private key. Include it only if the wallet matters,
-and only in a private repo.
+Every step here has a way to fail that produces no error at all, and the whole
+thing only surfaces later as `file is not a database`:
 
-### Backing up
+- **Copying a live SQLite file** can capture a half-written page. `backup.sh`
+  goes through `sqlite3 .backup` instead.
+- **Git normalises "text" files.** A repo carrying `* text=auto` corrupts a
+  `.db` in transit. `backup.sh` writes a `.gitattributes` marking them binary.
+- **Git LFS pointers.** If the backup repo keeps databases in LFS, a clone
+  without git-lfs succeeds and writes ~130-byte stubs in their place.
+  `restore.sh` fetches LFS content, and refuses to apply a backup whose
+  databases fail `PRAGMA integrity_check`.
+- **Writing through symlinks.** Several paths are symlinks onto the ephemeral
+  disk; restoring into them puts recovered data where the next redeploy erases
+  it. `restore.sh` skips any destination that is a live symlink.
+- **Clobbering `.env`.** It is regenerated from platform env vars on every boot
+  and holds every secret in plaintext. It is excluded from both directions.
 
-1. **Copy databases with sqlite3, never `cp`.** A plain copy of a live database
-   can capture a half-written page and produce a file that restores cleanly and
-   fails at open time:
-   ```bash
-   sqlite3 "${HERMES_HOME}/state.db"  ".backup /tmp/backup/state.db"
-   sqlite3 "${HERMES_HOME}/kanban.db" ".backup /tmp/backup/kanban.db"
-   ```
-2. **Mark databases binary before committing.** If the backup repo has
-   `* text=auto` in `.gitattributes`, git line-ending normalisation corrupts
-   them. Add to the backup repo's `.gitattributes`:
-   ```
-   *.db binary
-   ```
-3. **Prefer plain git objects over LFS.** These databases are small. If the repo
-   does use LFS, restores require `git lfs pull` — see below.
-4. **Verify what you pushed** actually contains data, not a stub:
-   ```bash
-   ls -la /tmp/backup/   # a real state.db is KB-to-MB, never ~130 bytes
-   ```
+`restore.sh` verifies the whole payload *before* writing anything, so a damaged
+backup leaves the running state untouched.
 
-### Restoring
+### What is covered
 
-1. **Fetch LFS content if the repo uses it.** A clone without it succeeds and
-   writes ~130-byte pointer stubs in place of the databases — no error at all:
-   ```bash
-   git lfs pull
-   ```
-2. Copy the files back into `${HERMES_HOME}`.
-3. **Verify before restarting.** No output from either command means success:
-   ```bash
-   find "${HERMES_HOME}" -type f -size -200c \
-     -exec sh -c 'head -c 40 "$1" | grep -q git-lfs && echo "LFS POINTER: $1"' _ {} \;
+Backed up — irreplaceable, lives on the volume:
 
-   for db in "${HERMES_HOME}"/*.db; do
-     sqlite3 "$db" "PRAGMA integrity_check;" | grep -qx ok || echo "CORRUPT: $db"
-   done
-   ```
-4. Restart the service.
+```
+config.yaml  sessions/  cron/  pairing/  state.db  kanban.db
+skills/      plugins/   .radius-cli/  .byterover/  .hermes_api_key
+external-skills/  (minus the vendored clone)
+```
 
-The bootstrap runs the same two checks on every boot and warns in the log, so a
-bad restore is caught even if step 3 is skipped. `file is not a database` in the
-Hermes log means step 1 or 2 went wrong.
+`skills/` and `plugins/` matter here: the boot loop only overwrites the entries
+bundled in the image, by name. Anything you author at runtime lives alongside
+them and is lost with the volume if it is not backed up.
+
+Not backed up — rebuilt on every boot, and including them would bloat the repo
+or overwrite live symlinks:
+
+```
+.env  logs/  well-known-skills/  external-skills/radius-skills/
+```
+
+`.radius-cli/` holds a wallet private key. It is included by default; pass
+`--no-wallet` to omit it, and keep the backup repository private either way.
+
+### Verifying by hand
+
+The bootstrap runs these on every boot and warns in the log, but to check
+directly:
+
+```bash
+find "${HERMES_HOME}" -type f -size -200c \
+  -exec sh -c 'head -c 40 "$1" | grep -q git-lfs && echo "LFS POINTER: $1"' _ {} \;
+
+for db in "${HERMES_HOME}"/*.db; do
+  sqlite3 "$db" "PRAGMA integrity_check;" | grep -qx ok || echo "CORRUPT: $db"
+done
+```
+
+No output from either means the state is intact.
 
 ## Payment / Crypto Preference
 
