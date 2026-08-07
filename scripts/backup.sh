@@ -36,6 +36,10 @@ if [[ -z "$REPO_URL" ]]; then
   exit 2
 fi
 
+# How many backup snapshots to keep in the repository's history. Each backup
+# commits a full copy of the state, so an unbounded history only grows.
+KEEP="${BACKUP_KEEP:-2}"
+
 TOKEN="${BACKUP_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 if [[ -z "$TOKEN" ]]; then
   echo "[backup] ERROR: set BACKUP_GITHUB_TOKEN or GITHUB_TOKEN first." >&2
@@ -181,7 +185,9 @@ find "$STAGING" -type l -delete 2>/dev/null || true
 AUTH_URL="$(printf '%s' "$REPO_URL" | sed -E "s#^https://#https://x-access-token:${TOKEN}@#")"
 
 echo "[backup] Cloning backup repository"
-if ! git clone --quiet --depth 1 "$AUTH_URL" "$CLONE" 2>/dev/null; then
+# Deep enough to see the commits retention needs to inspect, shallow enough not
+# to drag down the entire backup history.
+if ! git clone --quiet --depth "$((KEEP + 1))" "$AUTH_URL" "$CLONE" 2>/dev/null; then
   echo "[backup] Repository is empty or unreachable — initialising a new one."
   git init --quiet "$CLONE"
   git -C "$CLONE" remote add origin "$AUTH_URL"
@@ -265,11 +271,54 @@ fi
 
 git -C "$CLONE" commit --quiet -m "Hermes state backup $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# --- retention ----------------------------------------------------------------
+# Keep only the most recent BACKUP_KEEP snapshots.
+#
+# Every backup commits a fresh copy of the whole state, so an unbounded history
+# grows by roughly the payload size each time and never shrinks. Left alone this
+# walks into GitHub's repository size limits.
+#
+# The branch is rebuilt from scratch with `git commit-tree`, reusing the trees
+# already in the object store — no checkouts, no working-tree churn. Older
+# commits become unreachable and GitHub garbage-collects them.
+#
+# NOTE: unreachable Git LFS objects are NOT collected automatically. A repo that
+# ever pushed via LFS keeps consuming quota until it is deleted and recreated.
+# Compressed backups avoid LFS entirely, so this only matters for history that
+# predates that change.
+if [[ "$KEEP" -ge 1 ]] 2>/dev/null; then
+  total="$(git -C "$CLONE" rev-list --count HEAD 2>/dev/null || echo 1)"
+
+  if [[ "$total" -gt "$KEEP" ]]; then
+    # Oldest-first list of the commits to keep, newest last.
+    keep_list="$(git -C "$CLONE" rev-list --max-count="$KEEP" HEAD | tac)"
+
+    parent=""
+    while IFS= read -r c; do
+      [[ -n "$c" ]] || continue
+      tree="$(git -C "$CLONE" rev-parse "${c}^{tree}")"
+      msg="$(git -C "$CLONE" log -1 --format=%s "$c")"
+      if [[ -z "$parent" ]]; then
+        parent="$(git -C "$CLONE" commit-tree "$tree" -m "$msg")"
+      else
+        parent="$(git -C "$CLONE" commit-tree "$tree" -p "$parent" -m "$msg")"
+      fi
+    done <<< "$keep_list"
+
+    git -C "$CLONE" update-ref HEAD "$parent"
+    echo "[backup] History truncated to the last ${KEEP} backup(s) (was ${total})."
+    FORCE_PUSH=1
+  fi
+fi
+
 # Capture the real git output. Swallowing it turned a "file too large" rejection
 # into a misleading "check your token" message and cost an hour of guessing.
 # Scrub the token before anything is printed.
 echo "[backup] Pushing (${total_mb}MB — this can take a while)"
-push_log="$(git -C "$CLONE" push origin HEAD:main 2>&1)" && push_rc=0 || push_rc=$?
+# Rewriting history for retention means the push is no longer a fast-forward.
+push_args=(push origin HEAD:main)
+[[ "${FORCE_PUSH:-0}" == "1" ]] && push_args=(push --force origin HEAD:main)
+push_log="$(git -C "$CLONE" "${push_args[@]}" 2>&1)" && push_rc=0 || push_rc=$?
 push_log="${push_log//${TOKEN}/<token>}"
 
 if [[ "$push_rc" -eq 0 ]]; then
