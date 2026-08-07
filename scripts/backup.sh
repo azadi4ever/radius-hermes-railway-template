@@ -42,32 +42,31 @@ if [[ -z "$TOKEN" ]]; then
   exit 1
 fi
 
-# Paths worth keeping. Everything here is either irreplaceable or expensive to
-# recreate; nothing here is rebuilt from the image on boot.
+# DENY-list, not an allow-list. Back up everything under ${HERMES_HOME} except
+# the few things that are provably regenerable or actively harmful to store.
 #
-# skills/ and plugins/ ARE included: the boot loop only overwrites the bundled
-# entries by name, so anything the agent authored at runtime lives here and is
-# lost with the volume if it is not backed up.
-INCLUDE=(
-  config.yaml
-  vendored-skills.json
-  .initialized
-  .hermes_api_key
-  sessions
-  cron
-  pairing
-  skills
-  plugins
-  .byterover
-  external-skills
+# An allow-list looked tidier and was wrong: a real backup repo turned out to
+# hold memories/, profiles/ and SOUL.md, none of which a hand-written list had
+# thought of. Hermes adds state directories over time, and an allow-list drops
+# each new one silently — you only find out when a restore comes back missing
+# something. Enumerate what must NOT be kept; let everything else through.
+EXCLUDE_NAMES=(
+  .env                 # regenerated from platform env vars each boot; all secrets in plaintext
+  logs                 # disposable, unbounded
+  well-known-skills    # derived from skills/ on every boot
 )
-[[ "$INCLUDE_WALLET" == "1" ]] && INCLUDE+=(.radius-cli)
+[[ "$INCLUDE_WALLET" == "1" ]] || EXCLUDE_NAMES+=(.radius-cli)
 
-# Deliberately excluded:
-#   .env                          regenerated each boot; all secrets in plaintext
-#   logs/                         disposable, unbounded
-#   well-known-skills/            derived from skills/ each boot
-#   external-skills/radius-skills re-cloned each boot (skipped inside the copy)
+# Skipped inside external-skills/: the vendored clone is re-cloned every boot.
+EXCLUDE_NESTED=(external-skills/radius-skills)
+
+is_excluded() {
+  local name="$1" e
+  for e in "${EXCLUDE_NAMES[@]}"; do
+    [[ "$name" == "$e" ]] && return 0
+  done
+  return 1
+}
 
 STAGING="$(mktemp -d)"
 CLONE="$(mktemp -d)"
@@ -93,29 +92,40 @@ done
 shopt -u nullglob
 
 # --- everything else ---------------------------------------------------------
-for item in "${INCLUDE[@]}"; do
-  src="${HERMES_HOME}/${item}"
-  [[ -e "$src" ]] || continue
+shopt -s dotglob nullglob
+for src in "${HERMES_HOME}"/*; do
+  item="$(basename "$src")"
+
+  # Databases were already snapshotted through sqlite3 above.
+  [[ "$item" == *.db ]] && continue
+  # Their sidecars are meaningless without the live database.
+  [[ "$item" == *.db-wal || "$item" == *.db-shm || "$item" == *.lock ]] && continue
+
+  if is_excluded "$item"; then
+    echo "[backup]   skipping ${item} (regenerated on boot / must not be stored)"
+    continue
+  fi
+
   # A symlink here points at the ephemeral disk: its content is rebuilt on boot,
-  # so following it would copy in throwaway data.
+  # so following it would copy throwaway data into the backup.
   if [[ -L "$src" ]]; then
     echo "[backup]   skipping ${item} (symlink to ephemeral storage)"
     continue
   fi
+
   if [[ -d "$src" ]]; then
     mkdir -p "${STAGING}/${item}"
-    # --exclude keeps the vendored clone out even though its parent is included.
-    if command -v rsync >/dev/null 2>&1; then
-      rsync -a --exclude 'radius-skills' "${src}/" "${STAGING}/${item}/"
-    else
-      cp -a "${src}/." "${STAGING}/${item}/"
-      rm -rf "${STAGING}/${item}/radius-skills"
-    fi
+    cp -a "${src}/." "${STAGING}/${item}/"
+    # Drop nested paths that are regenerable even though their parent is kept.
+    for nested in "${EXCLUDE_NESTED[@]}"; do
+      [[ "$nested" == "${item}/"* ]] && rm -rf "${STAGING}/${nested}"
+    done
   else
     cp -a "$src" "${STAGING}/${item}"
   fi
   echo "[backup]   ${item}"
 done
+shopt -u dotglob nullglob
 
 # Also drop any symlinks that came along inside copied directories — they would
 # restore as dangling links on a fresh container.

@@ -10,10 +10,17 @@ This container has two storage areas with very different size and persistence:
 | `/data` (Railway volume) | **~434 MB only** | **Persistent** — survives redeploys | Only small, critical state |
 
 `${HERMES_HOME}` (`/data/.hermes`) is a **real directory on the volume**, so your
-config, sessions, cron jobs and pairings survive a redeploy. Only these
-subpaths are symlinked onto the ephemeral overlay, because they are rebuilt from
-the image or re-cloned on every boot: `external-skills/`, `well-known-skills/`,
-`skills/`, `plugins/`, `logs/`, plus `~/.npm` and `~/.cache`.
+config, sessions, memories, skills, plugins, cron jobs and pairings survive a
+redeploy. Only these subpaths are symlinked onto the ephemeral overlay, because
+each is rebuilt from the image or re-cloned on every boot:
+
+```
+external-skills/radius-skills/   well-known-skills/   logs/   ~/.npm   ~/.cache
+```
+
+`skills/` and `plugins/` are NOT symlinked. The boot loop only overwrites the
+entries bundled in the image, by name, so anything you author at runtime lives
+beside them on the volume and persists.
 
 Rules:
 
@@ -76,27 +83,47 @@ backup leaves the running state untouched.
 
 ### What is covered
 
-Backed up — irreplaceable, lives on the volume:
+Everything under `${HERMES_HOME}` is backed up **except** a short deny-list.
+That direction is deliberate: an allow-list looks tidier and silently drops each
+new state directory Hermes grows. A real backup repo turned out to contain
+`memories/`, `profiles/` and `SOUL.md` that no hand-written list had thought of.
+
+Excluded, and only these:
 
 ```
-config.yaml  sessions/  cron/  pairing/  state.db  kanban.db
-skills/      plugins/   .radius-cli/  .byterover/  .hermes_api_key
-external-skills/  (minus the vendored clone)
+.env                            regenerated from platform env vars every boot;
+                                holds every API key and token in plaintext
+logs/                           disposable, unbounded
+well-known-skills/              derived from skills/ on every boot
+external-skills/radius-skills/  vendored clone, re-cloned on every boot
+<any live symlink>              points at ephemeral storage
 ```
 
-`skills/` and `plugins/` matter here: the boot loop only overwrites the entries
-bundled in the image, by name. Anything you author at runtime lives alongside
-them and is lost with the volume if it is not backed up.
+`skills/` and `plugins/` are kept: the boot loop only overwrites the entries
+bundled in the image, by name, so anything authored at runtime lives alongside
+them and would otherwise be lost with the volume.
 
-Not backed up — rebuilt on every boot, and including them would bloat the repo
-or overwrite live symlinks:
+`.radius-cli/` holds a wallet private key. Included by default; pass
+`--no-wallet` to omit it. Keep the backup repository private either way.
 
+### Disk budget when restoring
+
+The volume is ~434 MB. A long-running agent's `state.db` can reach 100+ MB on
+its own, so check before restoring:
+
+```bash
+df -h /data
 ```
-.env  logs/  well-known-skills/  external-skills/radius-skills/
+
+If the restore would not fit, shrink the database rather than moving it off the
+volume — it is live state and must persist:
+
+```bash
+sqlite3 "${HERMES_HOME}/state.db" "VACUUM;"
 ```
 
-`.radius-cli/` holds a wallet private key. It is included by default; pass
-`--no-wallet` to omit it, and keep the backup repository private either way.
+Never symlink `state.db`, `kanban.db`, `sessions/`, `memories/` or `profiles/`
+onto `/opt`. That is ephemeral storage; a redeploy erases it.
 
 ### Verifying by hand
 
