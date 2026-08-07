@@ -5,8 +5,12 @@ builder = "dockerfile"
 restartPolicyType = "on_failure"
 requiredMountPath = "/data"
 # Without a healthcheck Railway only notices a hard crash, not a hung gateway.
-healthcheckPath = "/health"
-healthcheckTimeout = 300
+# Target /healthz, NOT /health: /health requires a Bearer JWT and a platform
+# healthcheck cannot send one, so it would 401 on every attempt and the deploy
+# would never go live. First boot on a fresh volume also has to create the
+# wallet and clone skills before the server binds, hence the long timeout.
+healthcheckPath = "/healthz"
+healthcheckTimeout = 600
 
 [variables]
 HERMES_HOME = "/data/.hermes"

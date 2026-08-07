@@ -5818,6 +5818,22 @@ async def health(auth: dict = Depends(jwt_auth_dep)):
     }
 
 
+@app.get("/healthz")
+async def healthz():
+    """Unauthenticated liveness probe for the hosting platform.
+
+    /health sits behind jwt_auth_dep — the entrypoint mints a JWT to poll it,
+    but a platform healthcheck cannot. Railway sends no Authorization header,
+    so pointing healthcheckPath at /health returns 401 on every attempt and the
+    deploy never goes live. railway.toml therefore targets this endpoint.
+
+    Deliberately reports liveness only: no auth state, no backend readiness, no
+    configuration. Everything here is already public, so exposing it unauth'd
+    tells an outsider nothing they could not learn from the agent card.
+    """
+    return {"status": "ok", "uptime": int(time.time() - _start_time)}
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info", access_log=False)
