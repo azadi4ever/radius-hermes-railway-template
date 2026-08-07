@@ -331,19 +331,41 @@ async def jwt_auth_dep(request: Request) -> dict:
         raise HTTPException(status_code=403, detail="Forbidden")
 
     issuer = result["issuer"]
-    trusted_env = os.environ.get("TRUSTED_DIDS", "")
-    if trusted_env:
-        allowed = {_did} | {d.strip() for d in trusted_env.split(",") if d.strip()}
-        if issuer not in allowed:
-            log_event(
-                logger,
-                logging.ERROR,
-                "Issuer DID not trusted",
-                event="auth.jwt_rejected",
-                auth_error="issuer_not_trusted",
-                issuer_did=issuer,
-                trusted_did_count=len(allowed),
-            )
-            raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Fail CLOSED. Previously the allowlist was only enforced when TRUSTED_DIDS
+    # was non-empty, so the default deployment accepted a JWT from ANY issuer:
+    # an attacker could publish a did.json on a domain they own, sign their own
+    # token, and get full /a2a access to an agent that has shell access. This
+    # service is exposed to the public internet, so "no allowlist configured"
+    # must mean "only our own DID", not "everyone".
+    #
+    # To federate with other agents, set TRUSTED_DIDS to a comma-separated list
+    # of their DIDs. Setting TRUSTED_DIDS="*" restores the old open behaviour
+    # and is intentionally explicit — never use it on a public deployment.
+    trusted_env = os.environ.get("TRUSTED_DIDS", "").strip()
+
+    if trusted_env == "*":
+        log_event(
+            logger,
+            logging.WARNING,
+            "TRUSTED_DIDS='*' — accepting tokens from ANY issuer DID",
+            event="auth.trust_all_enabled",
+            issuer_did=issuer,
+        )
+        return result
+
+    allowed = {_did} | {d.strip() for d in trusted_env.split(",") if d.strip()}
+    if issuer not in allowed:
+        log_event(
+            logger,
+            logging.ERROR,
+            "Issuer DID not trusted",
+            event="auth.jwt_rejected",
+            auth_error="issuer_not_trusted",
+            issuer_did=issuer,
+            trusted_did_count=len(allowed),
+            hint="add this DID to TRUSTED_DIDS to allow it",
+        )
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     return result
