@@ -201,6 +201,69 @@ def _tx_status(tx_hash: str) -> dict:
     }
 
 
+_EVM_ADDRESS_RE = re.compile(r"\A0x[0-9a-fA-F]{40}\Z")
+
+
+def _is_true(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _guard_send(to_address: str, amount_sbc: str) -> None:
+    """Gate outbound transfers before they reach radius-cli.
+
+    This tool is callable by the model, and the model takes instructions from
+    untrusted Telegram / Discord / A2A users. Without these checks, "send
+    everything to 0x..." is a single prompt-injection away from succeeding:
+    there was no recipient validation, no amount ceiling, and no way to turn
+    sending off. scripts/radius/send.py already validated the address; the
+    plugin the model actually calls did not.
+
+    Sending is DISABLED unless RADIUS_SEND_ENABLED is explicitly truthy.
+    """
+    if not _is_true(os.environ.get("RADIUS_SEND_ENABLED", "")):
+        raise ValueError(
+            "outbound transfers are disabled. Set RADIUS_SEND_ENABLED=true to "
+            "enable them, and set RADIUS_MAX_SEND_SBC to a sensible ceiling first."
+        )
+
+    if not _EVM_ADDRESS_RE.match(to_address):
+        raise ValueError(
+            f"'{to_address}' is not a valid 0x-prefixed 20-byte EVM address"
+        )
+
+    try:
+        amount = float(amount_sbc)
+    except (TypeError, ValueError):
+        raise ValueError(f"'{amount_sbc}' is not a valid amount") from None
+
+    if amount <= 0:
+        raise ValueError("amount must be greater than zero")
+
+    max_send = os.environ.get("RADIUS_MAX_SEND_SBC", "1").strip()
+    try:
+        ceiling = float(max_send)
+    except ValueError:
+        raise ValueError(
+            f"RADIUS_MAX_SEND_SBC is not a number: {max_send!r}"
+        ) from None
+
+    if amount > ceiling:
+        raise ValueError(
+            f"amount {amount} SBC exceeds the per-transaction limit of "
+            f"{ceiling} SBC (raise RADIUS_MAX_SEND_SBC to allow more)"
+        )
+
+    allowlist = [
+        a.strip().lower()
+        for a in os.environ.get("RADIUS_SEND_ALLOWLIST", "").split(",")
+        if a.strip()
+    ]
+    if allowlist and to_address.lower() not in allowlist:
+        raise ValueError(
+            f"{to_address} is not in RADIUS_SEND_ALLOWLIST"
+        )
+
+
 def register(ctx):
     def radius_wallet_address(_params, **_kwargs):
         return json.dumps(_wallet_address())
@@ -218,6 +281,10 @@ def register(ctx):
             return "Error: missing required parameter 'to'."
         if not amount_sbc:
             return "Error: missing required parameter 'amount_sbc'."
+        try:
+            _guard_send(to_address, amount_sbc)
+        except ValueError as err:
+            return f"Error: {err}"
         return json.dumps(_send_sbc(to_address, amount_sbc))
 
     def radius_tx_status(params, **_kwargs):

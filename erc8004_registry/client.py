@@ -44,7 +44,31 @@ def _address_file() -> Path:
     return _radius_dir() / "address"
 
 
+def _assert_onchain_writes_enabled() -> None:
+    """Gate every operation that needs the private key.
+
+    The key is handed to `cast` as an argv entry (see _send / _resolve_wallet_
+    address), which makes it readable from `ps` and /proc/<pid>/cmdline for as
+    long as the process runs. This agent executes shell commands on behalf of
+    untrusted chat users, so that window is reachable by prompt injection.
+
+    Properly fixing it means signing in-process with web3.py + eth_account, the
+    way scripts/radius/send.py already does, or importing the key into a
+    foundry keystore and using --keystore/--password-file. Until that work
+    happens, on-chain writes are off unless explicitly enabled, which keeps the
+    key out of argv entirely for deployments that never use the wallet.
+    """
+    flag = os.environ.get("ERC8004_WRITES_ENABLED", "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        raise RuntimeError(
+            "On-chain writes are disabled. Set ERC8004_WRITES_ENABLED=true to "
+            "enable registry transactions. Note that doing so exposes the "
+            "wallet private key in the process list while `cast` runs."
+        )
+
+
 def _read_private_key() -> str:
+    _assert_onchain_writes_enabled()
     private_key = os.environ.get("RADIUS_PRIVATE_KEY", "").strip()
     if private_key:
         return private_key
