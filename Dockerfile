@@ -33,6 +33,7 @@ RUN git clone --depth 1 --branch "${HERMES_GIT_REF}" --recurse-submodules https:
   && (git config --unset-all remote.origin.fetch || true) \
   && git config --add remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' \
   && git rev-parse HEAD > .pinned-commit \
+  && printf '%s\n' "${HERMES_GIT_REF}" > .pinned-ref \
   && echo "git" > .install_method
 
 RUN python -m venv /opt/venv

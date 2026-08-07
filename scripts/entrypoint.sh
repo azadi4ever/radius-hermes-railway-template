@@ -109,11 +109,14 @@ report_hermes_version() {
   local tree="/opt/hermes-agent"
   [[ -d "${tree}" ]] || return 0
 
-  local pinned running
+  # HERMES_GIT_REF is a build ARG, so it does not exist at runtime — read the
+  # ref name from the stamp the Dockerfile wrote instead of printing <unset>.
+  local pinned running ref
   pinned="$(cat "${tree}/.pinned-commit" 2>/dev/null || echo unknown)"
+  ref="$(cat "${tree}/.pinned-ref" 2>/dev/null || echo "${HERMES_GIT_REF:-unknown}")"
   running="$(git -C "${tree}" rev-parse HEAD 2>/dev/null || echo unknown)"
 
-  echo "[bootstrap] Hermes pinned at build: ${HERMES_GIT_REF:-<unset>} (${pinned:0:8})"
+  echo "[bootstrap] Hermes pinned at build: ${ref} (${pinned:0:8})"
   if [[ "${running}" != "${pinned}" && "${running}" != "unknown" ]]; then
     echo "[bootstrap] Hermes running: ${running:0:8} — updated at runtime; a redeploy reverts to the pin." >&2
   fi
