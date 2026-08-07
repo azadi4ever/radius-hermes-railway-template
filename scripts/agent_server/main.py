@@ -985,7 +985,36 @@ def _run_git(cmd: list[str], timeout_seconds: int) -> subprocess.CompletedProces
         raise RuntimeError("git command timed out") from None
 
 
+_GIT_SHA_RE = re.compile(r"\A[0-9a-fA-F]{7,40}\Z")
+_GIT_REF_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._/-]{0,254}\Z")
+
+
+def _validate_git_sha(value: str) -> str:
+    """Reject anything that is not a bare commit SHA.
+
+    These values reach `git` as argv entries. git treats a leading "-" as an
+    option, so an unvalidated value can smuggle in flags such as
+    --upload-pack=<cmd>. The webhook HMAC is the primary defence, but
+    /internal/skills/sync accepts `after` from any holder of HERMES_API_KEY,
+    so validate here too rather than trusting the caller.
+    """
+    value = (value or "").strip()
+    if not _GIT_SHA_RE.match(value):
+        raise ValueError(f"invalid git commit sha: {value!r}")
+    return value
+
+
+def _validate_git_ref(value: str) -> str:
+    """Reject branch names that are not plain refs (no leading '-', no spaces)."""
+    value = (value or "").strip()
+    if not _GIT_REF_RE.match(value) or ".." in value:
+        raise ValueError(f"invalid git ref: {value!r}")
+    return value
+
+
 def _sync_radius_skills_repo(after_sha: str, branch_name: str) -> None:
+    after_sha = _validate_git_sha(after_sha)
+    branch_name = _validate_git_ref(branch_name)
     repo_dir = Path(RADIUS_SKILLS_DIR)
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
     RADIUS_SKILLS_STAGING_ROOT.mkdir(parents=True, exist_ok=True)
@@ -1251,6 +1280,59 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
+
+
+# --- abuse limits -----------------------------------------------------------
+# This service is reachable from the public internet and every /a2a request
+# costs an LLM call. Without these two guards a single client can OOM the
+# container with one large body, or burn the inference budget with a loop.
+MAX_REQUEST_BYTES = int(os.environ.get("MAX_REQUEST_BYTES", str(1 * 1024 * 1024)))
+RATE_LIMIT_REQUESTS = int(os.environ.get("RATE_LIMIT_REQUESTS", "60"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"))
+_RATE_LIMIT_PATHS = ("/a2a",)
+_rate_limit_hits: dict[str, list[float]] = {}
+
+
+@app.middleware("http")
+async def _abuse_limits(request: Request, call_next):
+    declared = request.headers.get("content-length")
+    if declared:
+        try:
+            if int(declared) > MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": "request body too large"},
+                )
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "bad content-length"})
+
+    path = request.url.path
+    if any(path == p or path.startswith(p + "/") for p in _RATE_LIMIT_PATHS):
+        client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if not client_ip:
+            client_ip = request.client.host if request.client else "unknown"
+
+        now = time.monotonic()
+        cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+        hits = [t for t in _rate_limit_hits.get(client_ip, []) if t > cutoff]
+
+        if len(hits) >= RATE_LIMIT_REQUESTS:
+            _rate_limit_hits[client_ip] = hits
+            return JSONResponse(
+                status_code=429,
+                content={"error": "rate limit exceeded"},
+                headers={"Retry-After": str(RATE_LIMIT_WINDOW_SECONDS)},
+            )
+
+        hits.append(now)
+        _rate_limit_hits[client_ip] = hits
+
+        # Keep the bookkeeping dict from growing without bound.
+        if len(_rate_limit_hits) > 10000:
+            for ip in [k for k, v in _rate_limit_hits.items() if not any(t > cutoff for t in v)]:
+                _rate_limit_hits.pop(ip, None)
+
+    return await call_next(request)
 
 
 @app.middleware("http")
