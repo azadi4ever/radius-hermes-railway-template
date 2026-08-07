@@ -302,7 +302,11 @@ def _load_or_create_key(key_path: Path):
         return serialization.load_pem_private_key(key_path.read_bytes(), password=None)
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    key_path.parent.mkdir(parents=True, exist_ok=True)
+    # mode=0o700: without it the directory inherits the process umask (usually
+    # 0o022 -> 0o755), so the private keys inside stay listable by any local
+    # process. The 0o600 on the key file itself is applied below.
+    key_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(key_path.parent, 0o700)
     key_path.write_bytes(
         key.private_bytes(
             encoding=serialization.Encoding.PEM,

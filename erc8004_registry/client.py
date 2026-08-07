@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import re
 from pathlib import Path
 
 from .codec import (
@@ -81,11 +82,25 @@ def _cast_env():
     return env
 
 
+_SECRET_RE = re.compile(r"0x[0-9a-fA-F]{64}")
+
+
+def _redact_secrets(text: str) -> str:
+    """Strip 32-byte hex values (private keys) out of text.
+
+    `cast` is invoked with --private-key on argv and echoes its invocation back
+    in some error paths. That message propagates up to the plugin layer, which
+    returns it to the LLM as a tool result, which can end up in a reply to an
+    untrusted Telegram/Discord user. Redact before the string can travel.
+    """
+    return _SECRET_RE.sub("0x<redacted>", text or "")
+
+
 def _run_command(cmd):
     result = subprocess.run(cmd, capture_output=True, text=True, env=_cast_env())
     if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        stdout = (result.stdout or "").strip()
+        stderr = _redact_secrets((result.stderr or "").strip())
+        stdout = _redact_secrets((result.stdout or "").strip())
         message = stderr or stdout or f"Command failed with exit code {result.returncode}"
         raise RuntimeError(message)
     return (result.stdout or "").strip()
