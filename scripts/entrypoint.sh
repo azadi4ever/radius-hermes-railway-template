@@ -100,6 +100,26 @@ offload_path "${HOME}/.cache"  "cache"
 #   .hermes_api_key, .radius-cli/, .byterover/, vendored-skills.json,
 #   workspace/, .claude/
 
+# Print which Hermes this container is actually running. HERMES_GIT_REF pins
+# the build, but `hermes update` can move the checkout at runtime, so the pin
+# alone does not tell you what is live. When "running" differs from "pinned",
+# a redeploy will silently revert to the pin — the checkout is in the image on
+# the ephemeral disk.
+report_hermes_version() {
+  local tree="/opt/hermes-agent"
+  [[ -d "${tree}" ]] || return 0
+
+  local pinned running
+  pinned="$(cat "${tree}/.pinned-commit" 2>/dev/null || echo unknown)"
+  running="$(git -C "${tree}" rev-parse HEAD 2>/dev/null || echo unknown)"
+
+  echo "[bootstrap] Hermes pinned at build: ${HERMES_GIT_REF:-<unset>} (${pinned:0:8})"
+  if [[ "${running}" != "${pinned}" && "${running}" != "unknown" ]]; then
+    echo "[bootstrap] Hermes running: ${running:0:8} — updated at runtime; a redeploy reverts to the pin." >&2
+  fi
+}
+report_hermes_version
+
 # Report where the space is going. On the free plan the volume is 500MB and the
 # ephemeral disk is 1GB, so both are worth watching on every boot.
 report_disk_usage() {

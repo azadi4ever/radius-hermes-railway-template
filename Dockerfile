@@ -1,6 +1,16 @@
 FROM python:3.11-slim AS builder
 
-ARG HERMES_GIT_REF=main
+# Pin the upstream Hermes version. "main" is NOT a version: two builds of the
+# same commit of this repo can install different Hermes code, and because the
+# clone below is a cacheable Docker layer you also cannot rely on "main" to
+# actually be recent. This deployment saw both failure modes in one day —
+# 0957277f on one deploy, f15a38ee on the next, neither one asked for.
+#
+# To upgrade: bump this to a newer tag from
+# https://github.com/NousResearch/hermes-agent/releases and redeploy. If the
+# new version misbehaves, put the old tag back — that is the whole point of
+# pinning. `hermes update` still works at runtime (see below).
+ARG HERMES_GIT_REF=v2026.8.3
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -9,7 +19,21 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
-RUN git clone --depth 1 --branch "${HERMES_GIT_REF}" --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+# Cloning with --branch <tag> narrows the remote's fetch refspec to that one
+# tag (+refs/tags/<tag>:refs/tags/<tag>), so `git fetch origin main` finds
+# nothing and `hermes update` dead-ends. Restoring the standard refspec keeps
+# runtime updates working while the build stays pinned and reproducible.
+#
+# Note that `hermes update` only rewrites /opt/hermes-agent, which lives in the
+# image on the ephemeral disk — the update is real but lasts until the next
+# redeploy. Bump HERMES_GIT_REF to make a version change permanent.
+RUN git clone --depth 1 --branch "${HERMES_GIT_REF}" --recurse-submodules https://github.com/NousResearch/hermes-agent.git \
+  && cd hermes-agent \
+  && git remote set-branches origin '*' \
+  && (git config --unset-all remote.origin.fetch || true) \
+  && git config --add remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' \
+  && git rev-parse HEAD > .pinned-commit \
+  && echo "git" > .install_method
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
