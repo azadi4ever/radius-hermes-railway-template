@@ -52,6 +52,31 @@ fi
 
 mkdir -p "${HERMES_HOME}"
 
+# ensure_real_dir <path>
+# Guarantee <path> is a real directory, converting a symlink into one and
+# keeping whatever the old target still holds.
+#
+# `mkdir -p` FAILS with "File exists" when the path is a symlink whose target is
+# missing, and under `set -e` that kills the boot. This is not hypothetical: a
+# volume carrying /data/.hermes/external-skills as a link to an ephemeral path
+# that a later layout no longer creates left exactly that dangling link, and the
+# container crash-looped on it, never reaching the agent server.
+ensure_real_dir() {
+  local path="$1" target
+
+  if [[ -L "$path" ]]; then
+    target="$(readlink -f "$path" 2>/dev/null || true)"
+    rm -f "$path"
+    mkdir -p "$path"
+    if [[ -n "$target" && -d "$target" && -n "$(ls -A "$target" 2>/dev/null)" ]]; then
+      cp -a "${target}/." "${path}/" 2>/dev/null || true
+    fi
+    echo "[bootstrap] Converted ${path} from a symlink into a real directory"
+  else
+    mkdir -p "$path"
+  fi
+}
+
 # offload_path <path-on-volume> <name-under-ephemeral-root>
 # Replaces <path-on-volume> with a symlink to the ephemeral disk. Idempotent:
 # safe to run on every boot, and it never deletes data it has not copied first.
@@ -60,6 +85,9 @@ offload_path() {
   local ephemeral_path="${EPHEMERAL_ROOT}/$2"
 
   mkdir -p "${ephemeral_path}"
+
+  # The parent must be a real directory before anything can be linked inside it.
+  ensure_real_dir "$(dirname "${volume_path}")"
 
   # Already pointing at the right place: nothing to do.
   if [[ -L "${volume_path}" ]]; then
@@ -78,7 +106,6 @@ offload_path() {
     rm -f "${volume_path}"
   fi
 
-  mkdir -p "$(dirname "${volume_path}")"
   ln -sfn "${ephemeral_path}" "${volume_path}"
   echo "[bootstrap] Offloaded ${volume_path} -> ${ephemeral_path}"
 }
@@ -89,6 +116,8 @@ offload_path() {
 reclaim_path() {
   local volume_path="$1"
   local ephemeral_path="${EPHEMERAL_ROOT}/$2"
+
+  ensure_real_dir "$(dirname "${volume_path}")"
 
   if [[ -L "${volume_path}" ]]; then
     rm -f "${volume_path}"
