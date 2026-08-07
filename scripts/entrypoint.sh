@@ -83,22 +83,55 @@ offload_path() {
   echo "[bootstrap] Offloaded ${volume_path} -> ${ephemeral_path}"
 }
 
-# Large and fully regenerable — rebuilt from the image or re-cloned each boot.
-offload_path "${HERMES_HOME}/external-skills"    "external-skills"
+# reclaim_path <path-on-volume> <name-under-ephemeral-root>
+# Inverse of offload_path: turns an existing symlink back into a real directory
+# on the volume, keeping whatever the ephemeral side still holds. Idempotent.
+reclaim_path() {
+  local volume_path="$1"
+  local ephemeral_path="${EPHEMERAL_ROOT}/$2"
+
+  if [[ -L "${volume_path}" ]]; then
+    rm -f "${volume_path}"
+    mkdir -p "${volume_path}"
+    if [[ -d "${ephemeral_path}" && -n "$(ls -A "${ephemeral_path}" 2>/dev/null)" ]]; then
+      cp -a "${ephemeral_path}/." "${volume_path}/" 2>/dev/null || true
+    fi
+    echo "[bootstrap] Reclaimed ${volume_path} onto the volume (persists across redeploys)"
+  else
+    mkdir -p "${volume_path}"
+  fi
+}
+
+# Offload ONLY what is both large and genuinely reproducible.
+#
+# skills/ and plugins/ deliberately stay on the volume. They are 52K and 132K —
+# offloading them saved 0.04% of a 434MB volume while quietly destroying
+# anything the agent authored at runtime on the next redeploy. The boot loop
+# below only overwrites the bundled entries by name, so agent-created skills and
+# plugins survive a boot; they just have to be on the volume to survive a
+# redeploy. That is a bad trade in the other direction, so it is reverted here.
+reclaim_path "${HERMES_HOME}/skills"   "skills"
+reclaim_path "${HERMES_HOME}/plugins"  "plugins"
+
+# Only the vendored clone itself is offloaded, not the whole external-skills/
+# parent — anything the agent adds alongside it then stays on the volume.
+offload_path "${HERMES_HOME}/external-skills/radius-skills" "radius-skills"
+
+# Derived from skills/ and external-skills/ on every boot.
 offload_path "${HERMES_HOME}/well-known-skills"  "well-known-skills"
-offload_path "${HERMES_HOME}/skills"             "skills"
-offload_path "${HERMES_HOME}/plugins"            "plugins"
+
+# Disposable, and grows without bound.
 offload_path "${HERMES_HOME}/logs"               "logs"
 
 # Tool caches. HOME=/data, so without this npm/npx/pip caches land on the
-# volume and are by far the biggest consumers of the 500MB budget.
+# volume — these were the actual cause of the volume filling up, not state.
 offload_path "${HOME}/.npm"    "npm"
 offload_path "${HOME}/.cache"  "cache"
 
-# Everything NOT listed above stays on the volume and survives redeploys:
+# Everything else stays on the volume and survives redeploys:
 #   config.yaml, .env, .initialized, sessions/, cron/, pairing/,
 #   .hermes_api_key, .radius-cli/, .byterover/, vendored-skills.json,
-#   workspace/, .claude/
+#   workspace/, .claude/, skills/, plugins/, state.db, kanban.db
 
 # Print which Hermes this container is actually running. HERMES_GIT_REF pins
 # the build, but `hermes update` can move the checkout at runtime, so the pin

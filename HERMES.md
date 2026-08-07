@@ -47,18 +47,31 @@ sessions/            conversation history
 state.db kanban.db   agent state (SQLite)
 cron/                scheduled jobs
 pairing/             platform pairings
+skills/              INCLUDING any skill you authored at runtime
+plugins/             INCLUDING any plugin you authored at runtime
 .radius-cli/         wallet — SECRET
 .byterover/          memory config
 workspace/           working files
 ```
 
-**Never back up** — these are symlinks to the ephemeral disk and are rebuilt
-from the image on every boot. Including them wastes space and can overwrite live
-symlinks on restore:
+`skills/` and `plugins/` are real directories on the volume, and only the
+entries bundled in the image are overwritten by name on each boot. Anything you
+create there persists — so it must be backed up, or a lost volume loses your
+work permanently.
+
+**Do not back up** — these are symlinks onto the ephemeral disk, rebuilt or
+re-cloned on every boot. Including them wastes space and can write through the
+live symlinks on restore:
 
 ```
-external-skills/  well-known-skills/  skills/  plugins/  logs/
+external-skills/radius-skills/   vendored clone, re-cloned each boot
+well-known-skills/               derived from skills/ each boot
+logs/                            disposable
 ```
+
+Note it is `external-skills/radius-skills` specifically, not the whole
+`external-skills/` parent — anything you add alongside the vendored clone lives
+on the volume and DOES need backing up.
 
 **Never back up `.env`.** The entrypoint regenerates it from the platform's
 environment variables on every boot, so it is not lost — and it holds every API
