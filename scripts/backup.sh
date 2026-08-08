@@ -227,6 +227,28 @@ fi
 git -C "$CLONE" config user.email "hermes@localhost"
 git -C "$CLONE" config user.name "Hermes Agent"
 
+# Cap git's memory while it packs the push.
+#
+# The container's cgroup limit is around 1GB and steady-state usage is ~490MB, so
+# a backup has roughly 460MB of headroom. This deployment reached the ceiling
+# four times (memory.events: max 4) — no process was killed, because the kernel
+# reclaimed page cache successfully, but that margin is thin.
+#
+# The distinction that matters: page cache from copying the payload is
+# reclaimable, so it is benign. Git's packing buffers are anonymous memory and
+# are NOT, so they are what would turn a ceiling hit into a real oom_kill. These
+# settings target that half.
+#
+# bigFileThreshold is the important one: above it git stores a blob as-is instead
+# of loading it to compute deltas. The databases are already gzipped, so delta
+# compression could not have helped them anyway — it would only cost memory.
+git -C "$CLONE" config core.bigFileThreshold 16m
+git -C "$CLONE" config core.compression 1
+git -C "$CLONE" config pack.windowMemory 32m
+git -C "$CLONE" config pack.packSizeLimit 64m
+git -C "$CLONE" config pack.deltaCacheSize 16m
+git -C "$CLONE" config pack.threads 1
+
 # Plain git objects by default; LFS only for what genuinely needs it.
 #
 # GitHub hard-rejects any single blob over 100MB, and an un-gzipped state.db
