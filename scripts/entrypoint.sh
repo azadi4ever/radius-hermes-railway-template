@@ -192,15 +192,35 @@ report_disk_usage() {
   df -h /data "${EPHEMERAL_ROOT}" 2>/dev/null | awk 'NR==1 || /data|opt/ {print "[bootstrap] " $0}'
   if [[ -d /data ]]; then
     echo "[bootstrap] Largest persisted paths on the volume:"
-    du -shx /data/* /data/.[!.]* 2>/dev/null | sort -rh | head -8 \
-      | awk '{print "[bootstrap]   " $0}'
+    # `|| true` is not optional here. With `set -o pipefail`, an unexpanded glob
+    # (which happens whenever /data is nearly empty) makes du exit non-zero, the
+    # pipeline inherits it, and the boot dies inside a reporting function that
+    # has no business being fatal.
+    { du -shx /data/* /data/.[!.]* 2>/dev/null || true; } | sort -rh | head -8 \
+      | awk '{print "[bootstrap]   " $0}' || true
   fi
+  # state.db is normally the largest single item and the only one with a
+  # maintenance story, so name it and its remedy rather than leaving the reader
+  # to work out which of the paths above is actionable.
+  local db="${HERMES_HOME}/state.db" db_mb
+  if [[ -f "$db" ]]; then
+    db_mb="$(( $(stat -c%s "$db" 2>/dev/null || echo 0) / 1024 / 1024 ))"
+    echo "[bootstrap] state.db: ${db_mb}MB"
+    if (( db_mb >= 150 )); then
+      echo "[bootstrap] state.db is ${db_mb}MB. To shrink it:" >&2
+      echo "[bootstrap]   hermes sessions prune --older-than 30d   # deletes old sessions, then VACUUMs" >&2
+      echo "[bootstrap]   sqlite3 ${db} \"VACUUM;\"                 # reclaims free pages only" >&2
+      echo "[bootstrap] Deleting sessions from chat does NOT return disk space without one of these." >&2
+    fi
+  fi
+
   # Warn before the volume fills up: a full Railway volume forces an offline
   # resize/restart, and on the free plan there is no headroom to resize into.
   local used_pct
   used_pct="$(df --output=pcent /data 2>/dev/null | tr -dc '0-9' || true)"
   if [[ -n "${used_pct}" && "${used_pct}" -ge 80 ]]; then
-    echo "[bootstrap] WARNING: volume /data is ${used_pct}% full. Prune ${HERMES_HOME}/sessions or move more paths to EPHEMERAL_ROOT." >&2
+    echo "[bootstrap] WARNING: volume /data is ${used_pct}% full." >&2
+    echo "[bootstrap] Prune sessions (above), or move more paths to EPHEMERAL_ROOT." >&2
   fi
   echo "[bootstrap] ------------------"
 }
