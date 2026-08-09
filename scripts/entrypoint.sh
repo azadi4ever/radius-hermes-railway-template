@@ -185,6 +185,25 @@ offload_nested_caches() {
 }
 offload_nested_caches
 
+# Replay operator-approved offloads.
+#
+# scripts/offload.sh records each path it moves in .offload-list. Replaying that
+# list here is what makes the decision durable: the ephemeral disk is wiped on
+# every redeploy, so without this the symlink survives while its target does not
+# — and a dangling symlink is worse than the disk pressure it relieved, because
+# `mkdir -p` fails on one and takes the whole boot down.
+replay_offload_list() {
+  local list="${HERMES_HOME}/.offload-list" rel
+  [[ -r "$list" ]] || return 0
+  while IFS= read -r rel; do
+    rel="${rel%$'\r'}"
+    [[ -n "$rel" ]] || continue
+    case "$rel" in \#*|/*|*..*) continue ;; esac
+    offload_path "${HERMES_HOME}/${rel}" "offload-$(printf '%s' "$rel" | tr '/' '-')"
+  done < "$list"
+}
+replay_offload_list
+
 # Everything else stays on the volume and survives redeploys:
 #   config.yaml, .env, .initialized, sessions/, cron/, pairing/,
 #   .hermes_api_key, .radius-cli/, .byterover/, vendored-skills.json,

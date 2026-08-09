@@ -55,6 +55,30 @@ again once the condition clears.
 cat /data/.hermes/.disk-alert 2>/dev/null
 ```
 
+Better still, run the check itself — it prints nothing when there is nothing
+wrong, so it is safe to run at the start of any session:
+
+```bash
+/app/scripts/disk-check.sh
+```
+
+When it does print, it names each large directory and gives the exact `move` and
+`delete` command for it. **Relay that to the operator and wait.** Do not choose
+for them: you cannot tell from a size whether a directory is a redownloadable
+model or the only copy of their work.
+
+Once they answer:
+
+```bash
+/app/scripts/offload.sh <path>   # they said move — keeps the files, frees the volume
+rm -rf <path>                    # they said delete — permanent
+```
+
+`offload.sh` records the path so the link is rebuilt after every redeploy, and
+refuses outright on `sessions/`, `memories/`, `profiles/`, the databases and the
+wallet, so a mistyped path cannot move persistent state onto a disk that gets
+wiped.
+
 Nobody reads boot logs. A 191MB model cache once took the volume from 53% to
 100% in 31 hours and put the agent offline — the warning was in the log the
 whole time and went unseen. This file exists so it reaches a human.

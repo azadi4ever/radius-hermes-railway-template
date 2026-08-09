@@ -116,9 +116,11 @@ WORKDIR /app
 COPY scripts/entrypoint.sh /app/scripts/entrypoint.sh
 RUN sed -i 's/\r$//' /app/scripts/entrypoint.sh && chmod +x /app/scripts/entrypoint.sh
 
-COPY scripts/backup.sh scripts/restore.sh /app/scripts/
+COPY scripts/backup.sh scripts/restore.sh scripts/disk-check.sh scripts/offload.sh /app/scripts/
 RUN sed -i 's/\r$//' /app/scripts/backup.sh /app/scripts/restore.sh \
-  && chmod +x /app/scripts/backup.sh /app/scripts/restore.sh
+      /app/scripts/disk-check.sh /app/scripts/offload.sh \
+  && chmod +x /app/scripts/backup.sh /app/scripts/restore.sh \
+      /app/scripts/disk-check.sh /app/scripts/offload.sh
 
 COPY scripts/radius /app/scripts/radius
 COPY scripts/godaddy /app/scripts/godaddy
