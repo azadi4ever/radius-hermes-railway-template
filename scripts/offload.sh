@@ -53,6 +53,23 @@ if [[ -L "$TARGET" ]]; then
   exit 0
 fi
 
+# A path that does not exist yet can still be claimed in advance, and often
+# should be. The pattern rules in the entrypoint only act on directories that
+# already exist at boot, so a cache created BETWEEN boots — a plugin downloading
+# its model on first use — lands on the volume and stays there until the next
+# restart. That window is exactly how the volume filled last time. Pre-creating
+# the symlink means the very first write goes to ephemeral storage.
+if [[ ! -e "$TARGET" ]]; then
+  DEST="${EPHEMERAL_ROOT}/offload-$(printf '%s' "$REL" | tr '/' '-')"
+  mkdir -p "$DEST" "$(dirname "$TARGET")"
+  ln -sfn "$DEST" "$TARGET"
+  mkdir -p "$(dirname "$LIST")"
+  grep -qxF "$REL" "$LIST" 2>/dev/null || echo "$REL" >> "$LIST"
+  echo "[offload] Reserved ${REL} — it does not exist yet, so the link is in place"
+  echo "[offload] before anything is written. Whatever creates it will write to ${DEST}."
+  exit 0
+fi
+
 if [[ ! -d "$TARGET" ]]; then
   echo "[offload] ERROR: ${TARGET} is not a directory." >&2
   exit 1
