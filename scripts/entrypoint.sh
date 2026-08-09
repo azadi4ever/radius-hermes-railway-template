@@ -157,6 +157,34 @@ offload_path "${HERMES_HOME}/logs"               "logs"
 offload_path "${HOME}/.npm"    "npm"
 offload_path "${HOME}/.cache"  "cache"
 
+# Caches that appear INSIDE other directories, wherever they turn up.
+#
+# A plugin installed at runtime downloads its dependencies into its own folder.
+# vector-search pulled a 191MB model into plugins/vector-search/model_cache —
+# 44% of a 434MB volume — and filled it to 100%, at which point Hermes could no
+# longer write and went offline. The named offloads above could not have caught
+# it: the plugin did not exist when that list was written, and the next one will
+# not either.
+#
+# So match on shape rather than on name. Anything called *_cache, node_modules,
+# __pycache__ or .cache is redownloadable by definition, and belongs on the
+# ephemeral disk no matter which directory it shows up in.
+offload_nested_caches() {
+  local found p rel key
+  found="$(find "${HERMES_HOME}" -maxdepth 3 -type d \
+             \( -name '*_cache' -o -name node_modules -o -name __pycache__ \
+                -o -name '.cache' -o -name 'cache' \) 2>/dev/null || true)"
+  [[ -n "$found" ]] || return 0
+
+  while IFS= read -r p; do
+    [[ -n "$p" && -d "$p" && ! -L "$p" ]] || continue
+    rel="${p#"${HERMES_HOME}"/}"
+    key="nested-$(printf '%s' "$rel" | tr '/' '-')"
+    offload_path "$p" "$key"
+  done <<< "$found"
+}
+offload_nested_caches
+
 # Everything else stays on the volume and survives redeploys:
 #   config.yaml, .env, .initialized, sessions/, cron/, pairing/,
 #   .hermes_api_key, .radius-cli/, .byterover/, vendored-skills.json,
