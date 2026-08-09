@@ -171,13 +171,36 @@ offload_path "${HOME}/.cache"  "cache"
 # ephemeral disk no matter which directory it shows up in.
 offload_nested_caches() {
   local found p rel key
-  found="$(find "${HERMES_HOME}" -maxdepth 3 -type d \
+  # `-type l` as well as `-type d`, and this is not optional.
+  #
+  # Once a path has been offloaded it IS a symlink, and find with -type d stops
+  # matching it. The next redeploy wipes the ephemeral disk, nothing recreates
+  # the target, and the link dangles. Hermes then does the equivalent of
+  # `if not exists(p): mkdir(p)` — exists() follows the broken link and returns
+  # False, mkdir sees the link itself and raises EEXIST — and the agent dies with
+  # "[Errno 17] File exists: /data/.hermes/image_cache".
+  #
+  # Matching symlinks too means offload_path runs again, and its first action is
+  # `mkdir -p` on the ephemeral target, which repairs the link before anything
+  # can trip over it. Same dangling-symlink trap that took the boot down on the
+  # external-skills path; it deserved a general fix, not a second local one.
+  found="$(find "${HERMES_HOME}" -maxdepth 3 \( -type d -o -type l \) \
              \( -name '*_cache' -o -name node_modules -o -name __pycache__ \
                 -o -name '.cache' -o -name 'cache' \) 2>/dev/null || true)"
   [[ -n "$found" ]] || return 0
 
   while IFS= read -r p; do
-    [[ -n "$p" && -d "$p" && ! -L "$p" ]] || continue
+    [[ -n "$p" ]] || continue
+    # A symlink that already points into the ephemeral root only needs its
+    # target recreated; anything else is a real directory to move.
+    if [[ -L "$p" ]]; then
+      case "$(readlink "$p" 2>/dev/null)" in
+        "${EPHEMERAL_ROOT}"/*) ;;
+        *) continue ;;
+      esac
+    elif [[ ! -d "$p" ]]; then
+      continue
+    fi
     rel="${p#"${HERMES_HOME}"/}"
     key="nested-$(printf '%s' "$rel" | tr '/' '-')"
     offload_path "$p" "$key"
