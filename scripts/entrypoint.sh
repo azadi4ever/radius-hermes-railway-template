@@ -217,15 +217,27 @@ report_hermes_version
 # ephemeral disk is 1GB, so both are worth watching on every boot.
 report_disk_usage() {
   echo "[bootstrap] --- disk usage ---"
-  df -h /data "${EPHEMERAL_ROOT}" 2>/dev/null | awk 'NR==1 || /data|opt/ {print "[bootstrap] " $0}'
+  # Every pipeline in this function needs `|| true`. Under `set -o pipefail` a
+  # single missing path makes df exit non-zero, the pipeline inherits it, and
+  # `set -e` ends the boot — inside a function whose only job is to print. This
+  # has now been the failure mode three times in this file; treat any reporting
+  # pipeline here as guilty until guarded.
+  { df -h /data "${EPHEMERAL_ROOT}" 2>/dev/null || true; } \
+    | awk 'NR==1 || /data|opt/ {print "[bootstrap] " $0}' || true
   if [[ -d /data ]]; then
-    echo "[bootstrap] Largest persisted paths on the volume:"
+    # Report to depth 3, not depth 1. A top-level line reading "192M plugins"
+    # is where the last outage hid: the actual consumer was
+    # plugins/vector-search/model_cache at 191MB, and nothing in the boot output
+    # named it. Naming the leaf is the difference between a log line the
+    # operator can act on and one they have to go digging behind.
+    #
     # `|| true` is not optional here. With `set -o pipefail`, an unexpanded glob
     # (which happens whenever /data is nearly empty) makes du exit non-zero, the
     # pipeline inherits it, and the boot dies inside a reporting function that
     # has no business being fatal.
-    { du -shx /data/* /data/.[!.]* 2>/dev/null || true; } | sort -rh | head -8 \
-      | awk '{print "[bootstrap]   " $0}' || true
+    echo "[bootstrap] Largest paths on the volume (excluding symlinked caches):"
+    { du -hx --max-depth=3 --exclude='*/node_modules/*' /data 2>/dev/null || true; } \
+      | sort -rh | head -10 | awk '{print "[bootstrap]   " $0}' || true
   fi
   # state.db is normally the largest single item and the only one with a
   # maintenance story, so name it and its remedy rather than leaving the reader
@@ -242,14 +254,59 @@ report_disk_usage() {
     fi
   fi
 
-  # Warn before the volume fills up: a full Railway volume forces an offline
+  # Warn before the volume fills up. A full Railway volume forces an offline
   # resize/restart, and on the free plan there is no headroom to resize into.
-  local used_pct
+  # 75%, not 80%: the last fill went from 53% to 100% in 31 hours, so a warning
+  # that only fires at 80% leaves very little time to act on.
+  local used_pct alert="${HERMES_HOME}/.disk-alert"
+  local alert_lines=""
   used_pct="$(df --output=pcent /data 2>/dev/null | tr -dc '0-9' || true)"
-  if [[ -n "${used_pct}" && "${used_pct}" -ge 80 ]]; then
+  if [[ -n "${used_pct}" && "${used_pct}" -ge 75 ]]; then
     echo "[bootstrap] WARNING: volume /data is ${used_pct}% full." >&2
-    echo "[bootstrap] Prune sessions (above), or move more paths to EPHEMERAL_ROOT." >&2
+    alert_lines+="Volume /data is ${used_pct}% full."$'\n'
   fi
+
+  # Third tier: large directories that are NOT recognised caches.
+  #
+  # Deliberately a warning and not an action. Size does not tell you whether
+  # something is reproducible — profiles/ is 77MB and is user data, and moving it
+  # to ephemeral storage on size alone would destroy it at the next redeploy.
+  # Only the NAME can establish that a directory is a cache, which is what the
+  # offload rules key on. Anything large that those rules did not claim gets
+  # surfaced here for a human to classify.
+  local big rel size
+  big="$(find "${HERMES_HOME}" -maxdepth 2 -type d \
+           ! -path "${HERMES_HOME}" 2>/dev/null \
+         | while IFS= read -r d; do
+             [[ -L "$d" ]] && continue
+             s="$(du -smx "$d" 2>/dev/null | cut -f1)"
+             [[ -n "$s" && "$s" -ge 40 ]] && printf '%s\t%s\n' "$s" "$d"
+           done | sort -rn || true)"
+
+  if [[ -n "$big" ]]; then
+    while IFS=$'\t' read -r size rel; do
+      [[ -n "$rel" ]] || continue
+      case "$(basename "$rel")" in
+        profiles|sessions|memories|skills|plugins|state|kanban|bin) continue ;;
+      esac
+      echo "[bootstrap] NOTE: ${rel#"${HERMES_HOME}"/} is ${size}MB and is not a recognised cache." >&2
+      echo "[bootstrap]   If it is regenerable, say so and it can be offloaded to ${EPHEMERAL_ROOT}." >&2
+      alert_lines+="${rel#"${HERMES_HOME}"/} is ${size}MB and is not a recognised cache."$'\n'
+    done <<< "$big"
+  fi
+
+  # Leave a file the agent can read, because nobody watches boot logs. HERMES.md
+  # instructs it to surface this at the start of a session. Removed when healthy
+  # so a stale warning cannot outlive the condition.
+  if [[ -n "$alert_lines" ]]; then
+    { echo "DISK ALERT — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf '%s' "$alert_lines"
+      echo "Remedy: hermes sessions prune --older-than 30d"
+    } > "$alert" 2>/dev/null || true
+  else
+    rm -f "$alert" 2>/dev/null || true
+  fi
+
   echo "[bootstrap] ------------------"
 }
 report_disk_usage

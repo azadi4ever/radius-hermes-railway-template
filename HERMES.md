@@ -18,6 +18,11 @@ each is rebuilt from the image or re-cloned on every boot:
 external-skills/radius-skills/   well-known-skills/   logs/   ~/.npm   ~/.cache
 ```
 
+Plus **any directory named `*_cache`, `node_modules`, `__pycache__`, `.cache` or
+`cache`, wherever it appears** under `${HERMES_HOME}`. That rule is why a plugin
+can download a large model without filling the volume: the code stays on the
+volume, the cache does not. It matches on the name, not the size — see below.
+
 `skills/` and `plugins/` are NOT symlinked. The boot loop only overwrites the
 entries bundled in the image, by name, so anything you author at runtime lives
 beside them on the volume and persists.
@@ -38,6 +43,36 @@ Rules:
    operator. The bootstrap log prints volume usage on every boot.
 
 Quick check: `df -h /data /opt/hermes-cache`
+
+### Disk alerts — check this at the start of a session
+
+If `/data/.hermes/.disk-alert` exists, **tell the operator in your first reply**
+and show its contents. It is written at boot when the volume passes 75% or when
+a large directory appears that the offload rules did not recognise, and removed
+again once the condition clears.
+
+```bash
+cat /data/.hermes/.disk-alert 2>/dev/null
+```
+
+Nobody reads boot logs. A 191MB model cache once took the volume from 53% to
+100% in 31 hours and put the agent offline — the warning was in the log the
+whole time and went unseen. This file exists so it reaches a human.
+
+### When a large directory is flagged
+
+The boot log will say a directory is large and "not a recognised cache". That is
+a question, not an instruction. Answer it honestly:
+
+- **Regenerable** (a downloaded model, a build output, an index that can be
+  rebuilt) → say so, and it can be offloaded to `/opt/hermes-cache`.
+- **Not regenerable** (anything the operator or you authored) → it stays on the
+  volume. Do NOT move it.
+
+Never move a directory to ephemeral storage because it is large. Size says
+nothing about whether the data can be recreated; `profiles/` is 77MB and losing
+it would lose real work. Only a name like `*_cache` or `node_modules` proves a
+directory is disposable.
 
 ## Backup & Restore
 
